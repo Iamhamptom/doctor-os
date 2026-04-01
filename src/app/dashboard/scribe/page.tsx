@@ -431,18 +431,34 @@ export default function ScribePage() {
             </div>
 
             {/* Actions */}
-            <div className="px-4 py-3 border-t border-border flex items-center gap-2">
-              <button onClick={reset} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] hover:bg-accent transition">
-                <RotateCcw className="w-3.5 h-3.5" /> New
-              </button>
-              <button onClick={download} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] hover:bg-accent transition">
-                <Download className="w-3.5 h-3.5" /> Download
-              </button>
-              <div className="flex-1" />
-              <button onClick={() => openReview()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-foreground text-background text-[12px] font-medium hover:opacity-90 transition">
-                <ExternalLink className="w-3.5 h-3.5" /> Review &amp; Code <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+            <div className="px-4 py-3 border-t border-border space-y-2">
+              {/* Big approve button */}
+              {!saved ? (
+                <button
+                  onClick={approveAndSend}
+                  disabled={saving}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-md bg-[var(--color-valid)]/20 ring-1 ring-[var(--color-valid)]/50 text-[var(--color-valid)] text-[13px] font-semibold hover:bg-[var(--color-valid)]/30 transition disabled:opacity-50"
+                >
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                  {saving ? "Saving..." : "Approve (100%) — Save & Send to VisioCode"}
+                </button>
+              ) : (
+                <div className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-md bg-[var(--color-valid)]/10 text-[var(--color-valid)] text-[13px]">
+                  <CheckCircle className="w-4 h-4" /> Saved & sent to VisioCode
+                </div>
+              )}
+              {/* Secondary */}
+              <div className="flex items-center gap-2">
+                <button onClick={reset} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md ring-1 ring-border text-[11px] hover:bg-accent transition">
+                  <RotateCcw className="w-3 h-3" /> New
+                </button>
+                <button onClick={download} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md ring-1 ring-border text-[11px] hover:bg-accent transition">
+                  <Download className="w-3 h-3" /> Download
+                </button>
+                <button onClick={() => openReview()} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md ring-1 ring-border text-[11px] hover:bg-accent transition">
+                  <FileText className="w-3 h-3" /> Edit document
+                </button>
+              </div>
             </div>
           </div>
         </div>

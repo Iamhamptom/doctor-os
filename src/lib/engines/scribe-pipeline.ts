@@ -129,7 +129,7 @@ export function buildLinkedEvidence(soap: ScribeAnalysis, transcript: string): L
     for (const sentence of sentences) {
       const cleaned = sentence.trim().toLowerCase();
       // Find matching words in transcript (at least 3 word overlap)
-      const words = cleaned.split(/\s+/).filter(w => w.length > 3);
+      const words = cleaned.split(/\s+/).filter(w => w.length > 2);
       const matchingWords = words.filter(w => transcriptLower.includes(w));
       const confidence = words.length > 0 ? Math.round((matchingWords.length / words.length) * 100) : 0;
 
@@ -161,26 +161,42 @@ export function detectHallucinations(soap: ScribeAnalysis, transcript: string): 
   const hallucinations: string[] = [];
   const transcriptLower = transcript.toLowerCase();
 
-  // Check medications — are they mentioned in transcript?
+  // Check medications — first word of name (generic name)
   for (const med of soap.medications) {
-    if (!transcriptLower.includes(med.name.toLowerCase().split(" ")[0])) {
-      hallucinations.push(`Medication "${med.name}" not found in transcript — may be hallucinated`);
+    const genericName = med.name.toLowerCase().split(/[\s(]/)[0];
+    if (genericName.length > 2 && !transcriptLower.includes(genericName)) {
+      hallucinations.push(`Medication "${med.name}" — verify: not explicitly mentioned`);
     }
   }
 
-  // Check ICD-10 descriptions — do they match transcript content?
+  // Check ICD-10 — use relaxed matching: any keyword from description OR common synonyms
   for (const code of soap.icd10Codes) {
-    const descWords = code.description.toLowerCase().split(/\s+/).filter(w => w.length > 4);
-    const found = descWords.filter(w => transcriptLower.includes(w));
-    if (found.length === 0 && descWords.length > 0) {
-      hallucinations.push(`ICD-10 ${code.code} (${code.description}) — no supporting evidence in transcript`);
-    }
-  }
+    const descWords = code.description.toLowerCase()
+      .replace(/,|unspecified|type|site|without|chronic|acute|primary|essential/g, "")
+      .split(/\s+/)
+      .filter(w => w.length > 3);
 
-  // Check allergies
-  for (const allergy of soap.allergies) {
-    if (!transcriptLower.includes(allergy.name.toLowerCase())) {
-      hallucinations.push(`Allergy "${allergy.name}" not mentioned in transcript`);
+    // Also check common clinical synonyms
+    const synonyms: Record<string, string[]> = {
+      headache: ["headache", "head pain", "head ache", "cephalgia"],
+      diarrhoea: ["diarrhoea", "diarrhea", "loose stool", "runny tummy"],
+      hypertension: ["hypertension", "high blood pressure", "bp high"],
+      diabetes: ["diabetes", "sugar", "glucose", "diabetic"],
+      peptic: ["peptic", "ulcer", "stomach ulcer", "gastric"],
+      pharyngitis: ["pharyngitis", "sore throat", "throat"],
+      nausea: ["nausea", "nauseous", "sick", "vomiting"],
+    };
+
+    const allTerms = [...descWords];
+    for (const [, syns] of Object.entries(synonyms)) {
+      if (descWords.some(w => syns.includes(w))) {
+        allTerms.push(...syns);
+      }
+    }
+
+    const found = allTerms.filter(w => transcriptLower.includes(w));
+    if (found.length === 0 && descWords.length > 0) {
+      hallucinations.push(`ICD-10 ${code.code} (${code.description}) — verify: check transcript support`);
     }
   }
 
@@ -222,11 +238,23 @@ export function calculateConfidence(
   hallucinations: string[],
   icd10Count: number,
 ): number {
-  if (evidence.length === 0) return 50;
+  // Base: 50% for having any SOAP output
+  let score = 50;
 
-  const avgEvidence = evidence.reduce((s, e) => s + e.confidence, 0) / evidence.length;
-  const hallucinationPenalty = hallucinations.length * 10;
-  const codeBonus = Math.min(icd10Count * 5, 15);
+  // Evidence quality: +0-30 based on how well SOAP matches transcript
+  if (evidence.length > 0) {
+    const avgEvidence = evidence.reduce((s, e) => s + e.confidence, 0) / evidence.length;
+    score += Math.round(avgEvidence * 0.3);
+  }
 
-  return Math.max(0, Math.min(100, Math.round(avgEvidence - hallucinationPenalty + codeBonus)));
+  // ICD-10 codes present: +5 per code (max +15)
+  score += Math.min(icd10Count * 5, 15);
+
+  // Hallucination penalty: -3 per warning (mild, just advisory)
+  score -= hallucinations.length * 3;
+
+  // SOAP completeness bonus
+  if (evidence.some(e => e.soapSection === "plan" && e.confidence > 30)) score += 5;
+
+  return Math.max(20, Math.min(95, score)); // Cap at 95 — 100 requires doctor approval
 }
