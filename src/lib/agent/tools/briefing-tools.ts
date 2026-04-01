@@ -50,7 +50,7 @@ export const get_recall_list = tool({
 
     return {
       count: recalls.length,
-      recalls: recalls.map(r => ({
+      recalls: recalls.map((r: any) => ({
         id: r.id, patientName: r.patient.name, phone: r.patient.phone,
         reason: r.reason, dueDate: r.dueDate, status: r.status,
         isOverdue: r.dueDate < new Date(),
@@ -73,9 +73,9 @@ export const get_daily_stats = tool({
       prisma.invoice.findMany({ where: { practiceId, createdAt: { gte: today } }, select: { totalAmount: true, paidAmount: true } }),
     ]);
 
-    const totalClaimed = claims.reduce((s, c) => s + c.totalAmount, 0);
-    const totalInvoiced = invoices.reduce((s, i) => s + i.totalAmount, 0);
-    const totalPaid = invoices.reduce((s, i) => s + i.paidAmount, 0);
+    const totalClaimed = claims.reduce((s: number, c: any) => s + c.totalAmount, 0);
+    const totalInvoiced = invoices.reduce((s: number, i: any) => s + i.totalAmount, 0);
+    const totalPaid = invoices.reduce((s: number, i: any) => s + i.paidAmount, 0);
 
     return {
       consultationsCompleted: consultations,

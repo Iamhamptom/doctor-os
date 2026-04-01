@@ -32,10 +32,9 @@ export const search_appointments = tool({
     return {
       date: targetDate.toISOString().split("T")[0],
       count: bookings.length,
-      appointments: bookings.map(b => ({
+      appointments: bookings.map((b: Record<string, unknown>) => ({
         id: b.id, patientName: b.patientName, service: b.service,
         scheduledAt: b.scheduledAt, duration: b.duration, status: b.status,
-        phone: b.patient?.phone,
       })),
     };
   },

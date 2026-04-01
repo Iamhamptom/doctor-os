@@ -16,17 +16,17 @@ export const get_queue = tool({
       orderBy: { arrivedAt: "asc" },
     });
 
-    const waiting = checkIns.filter(c => c.status === "waiting");
-    const inConsultation = checkIns.filter(c => c.status === "in_consultation");
-    const done = checkIns.filter(c => c.status === "checked_out" || c.status === "no_show");
+    const waiting = checkIns.filter((c: any) => c.status === "waiting");
+    const inConsultation = checkIns.filter((c: any) => c.status === "in_consultation");
+    const done = checkIns.filter((c: any) => c.status === "checked_out" || c.status === "no_show");
 
     return {
-      waiting: waiting.map(c => ({
+      waiting: waiting.map((c: any) => ({
         id: c.id, name: c.patientName, arrivedAt: c.arrivedAt,
         waitMinutes: Math.round((Date.now() - c.arrivedAt.getTime()) / 60000),
         notes: c.notes,
       })),
-      inConsultation: inConsultation.map(c => ({
+      inConsultation: inConsultation.map((c: any) => ({
         id: c.id, name: c.patientName, seenAt: c.seenAt,
       })),
       done: done.length,
