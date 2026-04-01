@@ -3,26 +3,19 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Mic, Square, FileText, Loader2, AlertTriangle, CheckCircle,
-  Download, ExternalLink, ArrowRight, Volume2, VolumeX, X, RotateCcw,
+  Download, ExternalLink, ArrowRight, Volume2, VolumeX, X,
+  RotateCcw, Shield, Activity, Plug, User, Stethoscope,
 } from "lucide-react";
-
-interface SOAPData {
-  soap: { subjective: string; objective: string; assessment: string; plan: string };
-  icd10Codes: Array<{ code: string; description: string; confidence: number }>;
-  redFlags: string[];
-  chiefComplaint: string;
-  medications: Array<{ name: string; dosage: string; frequency: string }>;
-}
+import type { PipelineResult } from "@/lib/engines/scribe-pipeline";
 
 export default function ScribePage() {
   const [phase, setPhase] = useState<"ready" | "recording" | "processing" | "done">("ready");
-  const [transcript, setTranscript] = useState("");
-  const [soap, setSoap] = useState<SOAPData | null>(null);
+  const [result, setResult] = useState<PipelineResult | null>(null);
   const [error, setError] = useState("");
   const [showReview, setShowReview] = useState(false);
   const [seconds, setSeconds] = useState(0);
-  const [voiceOn, setVoiceOn] = useState(false); // off by default for speed
-  const [statusText, setStatusText] = useState("");
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [pipelineStep, setPipelineStep] = useState("");
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -45,9 +38,8 @@ export default function ScribePage() {
     } catch { /* silent */ }
   }, [voiceOn]);
 
-  // ── START RECORDING ──
   const startRecording = useCallback(async () => {
-    setError(""); setTranscript(""); setSoap(null); setShowReview(false);
+    setError(""); setResult(null); setShowReview(false);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
@@ -57,151 +49,163 @@ export default function ScribePage() {
         stream.getTracks().forEach(t => t.stop());
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
         if (blob.size < 500) { setError("Too short. Speak for a few seconds."); setPhase("ready"); return; }
-        pipeline(blob);
+        runPipeline(blob);
       };
       recorderRef.current = recorder;
       recorder.start();
       setPhase("recording");
-    } catch {
-      setError("Microphone blocked. Allow access in browser settings.");
-    }
+    } catch { setError("Microphone blocked. Allow access in browser settings."); }
   }, []);
 
-  // ── STOP RECORDING ──
   const stopRecording = useCallback(() => {
     recorderRef.current?.stop();
     if (timerRef.current) clearInterval(timerRef.current);
   }, []);
 
-  // ── PIPELINE: transcribe → SOAP → review ──
-  const pipeline = async (blob: Blob) => {
+  // ── FULL PIPELINE — one API call ──
+  const runPipeline = async (blobOrText: Blob | string) => {
     setPhase("processing");
+    setPipelineStep("L1 → Sending to pipeline...");
 
-    // Step 1: Transcribe
-    setStatusText("Sending audio to Gemini 2.5 Flash...");
-    let text = "";
     try {
-      const fd = new FormData();
-      fd.append("audio", blob, "recording.webm");
-      const res = await fetch("/api/scribe/transcribe", { method: "POST", body: fd });
+      let res: Response;
+      if (blobOrText instanceof Blob) {
+        setPipelineStep("L2 → Transcribing with Gemini 2.5 Flash...");
+        const fd = new FormData();
+        fd.append("audio", blobOrText, "recording.webm");
+        res = await fetch("/api/scribe/pipeline", { method: "POST", body: fd });
+      } else {
+        setPipelineStep("L3 → Analyzing transcript...");
+        res = await fetch("/api/scribe/pipeline", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript: blobOrText }),
+        });
+      }
+
       const data = await res.json();
       if (!res.ok || data.error) {
-        setError(data.error || "Transcription failed.");
+        setError(data.error || "Pipeline failed");
         setPhase("ready");
         return;
       }
-      if (!data.transcript || data.transcript === "[silence]") {
-        setError("No speech detected. Try again — speak clearly.");
-        setPhase("ready");
-        return;
-      }
-      text = data.transcript;
-      setTranscript(text);
-    } catch (e) {
-      setError("Network error — couldn't reach transcription API.");
-      setPhase("ready");
-      return;
-    }
 
-    // Step 2: SOAP
-    setStatusText("Generating SOAP notes + ICD-10 codes...");
-    try {
-      const res = await fetch("/api/scribe/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: text }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setError(data.error || "SOAP analysis failed.");
-        setPhase("ready");
-        return;
-      }
-      if (data.analysis) {
-        setSoap(data.analysis);
-        setPhase("done");
-        setShowReview(true);
-        speak(`Done. ${data.analysis.icd10Codes?.length || 0} ICD-10 codes identified.`);
-      }
+      setResult(data as PipelineResult);
+      setPhase("done");
+      setShowReview(true);
+
+      const codes = data.analysis?.icd10Codes?.map((c: { code: string }) => c.code).join(", ") || "none";
+      speak(`Complete. ${data.analysis?.icd10Codes?.length || 0} codes: ${codes}. Confidence ${data.validation?.overallScore}%.`);
     } catch {
-      setError("SOAP analysis network error.");
+      setError("Pipeline network error.");
       setPhase("ready");
     }
   };
 
-  // ── Document helpers ──
-  const buildDoc = (d: SOAPData) => [
-    "CONSULTATION — CODING DOCUMENT",
-    "=".repeat(40),
-    `Date: ${new Date().toLocaleDateString("en-ZA")}`,
-    `Chief Complaint: ${d.chiefComplaint}`,
-    "", "ICD-10 CODES",
-    ...d.icd10Codes.map(c => `  ${c.code}  ${c.description}  [${c.confidence}%]`),
-    "", "SUBJECTIVE", d.soap.subjective || "—",
-    "", "OBJECTIVE", d.soap.objective || "—",
-    "", "ASSESSMENT", d.soap.assessment || "—",
-    "", "PLAN", d.soap.plan || "—",
-    ...(d.medications.length ? ["", "MEDICATIONS", ...d.medications.map(m => `  ${m.name} ${m.dosage} — ${m.frequency}`)] : []),
-    ...(d.redFlags.length ? ["", "RED FLAGS", ...d.redFlags.map(f => `  ! ${f}`)] : []),
-  ].join("\n");
+  // ── Helpers ──
+  const buildDoc = () => {
+    if (!result) return "";
+    const a = result.analysis;
+    return [
+      "CLINICAL CONSULTATION — CODING DOCUMENT",
+      "=".repeat(45),
+      `Date: ${new Date().toLocaleDateString("en-ZA")}`,
+      `Specialty: ${result.specialty}`,
+      `Confidence: ${result.validation.overallScore}%`,
+      `Chief Complaint: ${a.chiefComplaint}`,
+      "", "ICD-10 CODES",
+      ...a.icd10Codes.map(c => `  ${c.code}  ${c.description}  [${c.confidence}%]`),
+      "", "SUBJECTIVE", a.soap.subjective || "—",
+      "", "OBJECTIVE", a.soap.objective || "—",
+      "", "ASSESSMENT", a.soap.assessment || "—",
+      "", "PLAN", a.soap.plan || "—",
+      ...(a.medications.length ? ["", "MEDICATIONS", ...a.medications.map(m => `  ${m.name} ${m.dosage} — ${m.frequency}`)] : []),
+      ...(a.redFlags.length ? ["", "RED FLAGS", ...a.redFlags.map(f => `  ! ${f}`)] : []),
+      ...(result.validation.hallucinations.length ? ["", "WARNINGS", ...result.validation.hallucinations.map(h => `  ? ${h}`)] : []),
+      ...(result.validation.drugSafety?.hasIssues ? [
+        "", "DRUG SAFETY ALERTS",
+        ...result.validation.drugSafety.interactions.map(i => `  [${i.severity.toUpperCase()}] ${i.drug1} + ${i.drug2}: ${i.description}`),
+        ...result.validation.drugSafety.allergyConflicts.map(c => `  [ALLERGY] ${c.medication} conflicts with ${c.allergy}`),
+      ] : []),
+    ].join("\n");
+  };
 
   const download = () => {
-    if (!soap) return;
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([buildDoc(soap)], { type: "text/plain" }));
+    a.href = URL.createObjectURL(new Blob([buildDoc()], { type: "text/plain" }));
     a.download = `consultation-${new Date().toISOString().split("T")[0]}.txt`;
     a.click();
   };
 
   const sendToVisioCode = () => {
-    if (!soap) return;
+    if (!result) return;
     download();
-    const codes = soap.icd10Codes.map(c => c.code).join(", ");
-    const p = `Doctor OS consultation:\nChief Complaint: ${soap.chiefComplaint}\nICD-10: ${codes}\nAssessment: ${soap.soap.assessment}\nPlan: ${soap.soap.plan}\n\nValidate codes and check scheme compatibility.`;
+    const codes = result.analysis.icd10Codes.map(c => c.code).join(", ");
+    const p = `Doctor OS consultation:\nSpecialty: ${result.specialty}\nChief Complaint: ${result.analysis.chiefComplaint}\nICD-10: ${codes}\nAssessment: ${result.analysis.soap.assessment}\nPlan: ${result.analysis.soap.plan}\n\nValidate codes, check scheme compatibility, suggest corrections.`;
     window.open(`https://visiocode.vercel.app/chat?prompt=${encodeURIComponent(p)}`, "_blank");
     setShowReview(false);
   };
 
-  const reset = () => { setPhase("ready"); setTranscript(""); setSoap(null); setShowReview(false); setError(""); setSeconds(0); };
+  const reset = () => { setPhase("ready"); setResult(null); setShowReview(false); setError(""); setSeconds(0); };
 
-  // ═══════════════════════════════════════════════════
+  const a = result?.analysis;
+  const v = result?.validation;
+
   return (
     <div className="p-4 lg:p-6 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-6">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-semibold">AI Scribe</h1>
           <p className="text-[11px] text-muted-foreground">
-            {phase === "ready" && !soap && "Tap the mic to start a consultation."}
+            {phase === "ready" && !result && "Tap mic to record. Full pipeline runs automatically."}
             {phase === "recording" && "Listening... tap stop when done."}
-            {phase === "processing" && statusText}
-            {phase === "done" && "Ready. Review and send for coding."}
+            {phase === "processing" && pipelineStep}
+            {phase === "done" && `Done in ${result?.durationSeconds}s — ${result?.specialty} — Score: ${v?.overallScore}%`}
           </p>
         </div>
-        <button onClick={() => setVoiceOn(!voiceOn)} className="p-1.5 rounded-md ring-1 ring-border">
-          {voiceOn ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5 text-muted-foreground" />}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setVoiceOn(!voiceOn)} className="p-1.5 rounded-md ring-1 ring-border" title="ElevenLabs voice">
+            {voiceOn ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5 text-muted-foreground" />}
+          </button>
+        </div>
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[var(--color-rejected)]/10 text-[var(--color-rejected)] text-[12px] mb-4">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[var(--color-rejected)]/10 text-[var(--color-rejected)] text-[12px] mb-3">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {error}
           <button onClick={() => setError("")} className="ml-auto"><X className="w-3 h-3" /></button>
         </div>
       )}
 
-      {/* ── READY: Big mic ── */}
-      {phase === "ready" && !soap && (
+      {/* ── READY ── */}
+      {phase === "ready" && !result && (
         <div className="flex-1 flex flex-col items-center justify-center">
           <button onClick={startRecording}
             className="w-32 h-32 rounded-full ring-2 ring-border bg-card flex items-center justify-center hover:bg-accent hover:ring-foreground transition-all group">
             <Mic className="w-12 h-12 text-muted-foreground group-hover:text-foreground transition" />
           </button>
-          <p className="mt-6 text-[13px] text-muted-foreground">Tap to record</p>
-          <p className="text-[11px] text-muted-foreground mt-1">Record &rarr; Transcribe &rarr; SOAP &rarr; Code</p>
+          <p className="mt-6 text-[13px] text-muted-foreground">Tap to record consultation</p>
+          <p className="text-[11px] text-muted-foreground mt-1">Or paste transcript below</p>
+          <input
+            type="text" placeholder="Paste transcript here, press Enter..."
+            className="mt-4 w-full max-w-md ring-1 ring-border rounded-md px-3 py-2 text-[13px] bg-card placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && e.currentTarget.value.trim().length > 20) {
+                runPipeline(e.currentTarget.value.trim());
+                e.currentTarget.value = "";
+              }
+            }}
+          />
+          <div className="mt-6 flex items-center gap-6 text-[10px] text-muted-foreground">
+            <span className="flex items-center gap-1"><Activity className="w-3 h-3" /> Gemini 2.5 Flash</span>
+            <span className="flex items-center gap-1"><Shield className="w-3 h-3" /> Hallucination check</span>
+            <span className="flex items-center gap-1"><Plug className="w-3 h-3" /> CareOn + VisioCode</span>
+          </div>
         </div>
       )}
 
-      {/* ── RECORDING: Pulsing stop ── */}
+      {/* ── RECORDING ── */}
       {phase === "recording" && (
         <div className="flex-1 flex flex-col items-center justify-center">
           <button onClick={stopRecording}
@@ -216,51 +220,79 @@ export default function ScribePage() {
         </div>
       )}
 
-      {/* ── PROCESSING: Spinner ── */}
+      {/* ── PROCESSING ── */}
       {phase === "processing" && (
         <div className="flex-1 flex flex-col items-center justify-center">
           <Loader2 className="w-16 h-16 animate-spin text-muted-foreground mb-6" />
-          <p className="text-[13px] font-medium">{statusText}</p>
-          <p className="text-[11px] text-muted-foreground mt-1">5-15 seconds...</p>
+          <p className="text-[13px] font-medium">{pipelineStep}</p>
+          <div className="mt-4 flex items-center gap-2 text-[11px] text-muted-foreground">
+            <span>L1 Signal</span> <span>&rarr;</span>
+            <span>L2 Transcribe</span> <span>&rarr;</span>
+            <span>L3 SOAP</span> <span>&rarr;</span>
+            <span>L4 Validate</span> <span>&rarr;</span>
+            <span>L5 Route</span>
+          </div>
         </div>
       )}
 
-      {/* ── DONE: Split view ── */}
-      {soap && phase !== "processing" && (
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-0">
-          {/* Transcript */}
+      {/* ── DONE: Full results ── */}
+      {result && a && v && phase !== "processing" && (
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-0 overflow-hidden">
+          {/* LEFT: Transcript + speakers */}
           <div className="rounded-lg ring-1 ring-border bg-card flex flex-col overflow-hidden">
             <div className="px-4 py-2 border-b border-border flex items-center gap-2">
               <Mic className="w-3.5 h-3.5 text-muted-foreground" />
               <span className="text-[13px] font-medium">Transcript</span>
+              <span className="ml-auto text-[10px] font-mono text-muted-foreground">{result.speakers.length} segments</span>
             </div>
-            <div className="flex-1 p-4 overflow-y-auto">
-              <pre className="text-[13px] whitespace-pre-wrap font-sans leading-relaxed">{transcript}</pre>
+            <div className="flex-1 p-4 overflow-y-auto space-y-2">
+              {result.speakers.map((seg, i) => (
+                <div key={i} className="flex gap-2">
+                  <span className={`text-[10px] font-mono shrink-0 w-14 pt-0.5 ${
+                    seg.speaker === "Doctor" ? "text-[var(--color-valid)]" : "text-muted-foreground"
+                  }`}>{seg.speaker}:</span>
+                  <span className="text-[12px] leading-relaxed">{seg.text}</span>
+                </div>
+              ))}
             </div>
           </div>
-          {/* SOAP */}
+
+          {/* RIGHT: SOAP + Validation */}
           <div className="rounded-lg ring-1 ring-border bg-card flex flex-col overflow-hidden">
             <div className="px-4 py-2 border-b border-border flex items-center gap-2">
               <FileText className="w-3.5 h-3.5 text-muted-foreground" />
               <span className="text-[13px] font-medium">SOAP Notes</span>
-              <CheckCircle className="w-3 h-3 text-[var(--color-valid)] ml-auto" />
+              <span className={`ml-auto text-[10px] font-mono ${v.overallScore >= 70 ? "text-[var(--color-valid)]" : v.overallScore >= 40 ? "text-[var(--color-warning)]" : "text-[var(--color-rejected)]"}`}>
+                {v.overallScore}% confidence
+              </span>
             </div>
             <div className="flex-1 p-4 overflow-y-auto space-y-3">
-              <div className="rounded-md bg-accent px-3 py-2">
-                <span className="text-[10px] text-muted-foreground uppercase">Chief Complaint</span>
-                <p className="text-[13px] font-medium">{soap.chiefComplaint}</p>
+              {/* Specialty + Chief Complaint */}
+              <div className="flex gap-2">
+                <div className="flex-1 rounded-md bg-accent px-3 py-2">
+                  <span className="text-[10px] text-muted-foreground uppercase">Chief Complaint</span>
+                  <p className="text-[13px] font-medium">{a.chiefComplaint}</p>
+                </div>
+                <div className="rounded-md bg-accent px-3 py-2">
+                  <span className="text-[10px] text-muted-foreground uppercase">Specialty</span>
+                  <p className="text-[12px] font-mono capitalize">{result.specialty.replace("_", " ")}</p>
+                </div>
               </div>
+
+              {/* SOAP */}
               {(["subjective","objective","assessment","plan"] as const).map(s => (
                 <div key={s}>
-                  <label className="text-[10px] text-muted-foreground uppercase font-medium">{s.charAt(0).toUpperCase()} — {s}</label>
-                  <div className="mt-1 rounded-md ring-1 ring-border bg-background p-2 text-[12px] leading-relaxed">{soap.soap[s] || "—"}</div>
+                  <label className="text-[10px] text-muted-foreground uppercase font-medium">{s.charAt(0)} — {s}</label>
+                  <div className="mt-1 rounded-md ring-1 ring-border bg-background p-2 text-[12px] leading-relaxed">{a.soap[s] || "—"}</div>
                 </div>
               ))}
-              {soap.icd10Codes.length > 0 && (
+
+              {/* ICD-10 */}
+              {a.icd10Codes.length > 0 && (
                 <div>
                   <label className="text-[10px] text-muted-foreground uppercase font-medium">ICD-10 Codes</label>
                   <div className="mt-1 space-y-1">
-                    {soap.icd10Codes.map((c,i) => (
+                    {a.icd10Codes.map((c, i) => (
                       <div key={i} className="flex items-center gap-2 rounded-md ring-1 ring-border bg-background px-2 py-1">
                         <span className="text-[12px] font-mono font-bold">{c.code}</span>
                         <span className="text-[11px] text-muted-foreground flex-1">{c.description}</span>
@@ -270,12 +302,63 @@ export default function ScribePage() {
                   </div>
                 </div>
               )}
-              {soap.redFlags.length > 0 && soap.redFlags.map((f,i) => (
+
+              {/* Drug Safety */}
+              {v.drugSafety?.hasIssues && (
+                <div className="rounded-md ring-1 ring-[var(--color-rejected)]/30 bg-[var(--color-rejected)]/5 p-3">
+                  <label className="text-[10px] text-[var(--color-rejected)] uppercase font-medium flex items-center gap-1">
+                    <Shield className="w-3 h-3" /> Drug Safety Alerts
+                  </label>
+                  {v.drugSafety.interactions.map((i, idx) => (
+                    <div key={idx} className="text-[11px] mt-1">
+                      <span className="font-mono text-[var(--color-rejected)]">[{i.severity.toUpperCase()}]</span> {i.drug1} + {i.drug2}
+                    </div>
+                  ))}
+                  {v.drugSafety.allergyConflicts.map((c, idx) => (
+                    <div key={idx} className="text-[11px] mt-1">
+                      <span className="font-mono text-[var(--color-rejected)]">[ALLERGY]</span> {c.medication} ↔ {c.allergy}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Hallucinations */}
+              {v.hallucinations.length > 0 && (
+                <div className="rounded-md ring-1 ring-[var(--color-warning)]/30 bg-[var(--color-warning)]/5 p-3">
+                  <label className="text-[10px] text-[var(--color-warning)] uppercase font-medium">Verification Warnings</label>
+                  {v.hallucinations.map((h, i) => (
+                    <div key={i} className="text-[11px] text-[var(--color-warning)] mt-1 flex items-start gap-1">
+                      <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" /> {h}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Red Flags */}
+              {a.redFlags.length > 0 && a.redFlags.map((f, i) => (
                 <div key={i} className="flex items-center gap-1.5 text-[11px] text-[var(--color-rejected)]">
                   <AlertTriangle className="w-3 h-3" /> {f}
                 </div>
               ))}
+
+              {/* Linked Evidence summary */}
+              <div className="rounded-md bg-accent px-3 py-2">
+                <label className="text-[10px] text-muted-foreground uppercase font-medium">Linked Evidence</label>
+                <p className="text-[11px] mt-0.5">
+                  {v.linkedEvidence.filter(e => e.confidence >= 60).length} of {v.linkedEvidence.length} SOAP claims backed by transcript
+                </p>
+              </div>
+
+              {/* Routing status */}
+              <div className="flex flex-wrap gap-2">
+                {result.routing.visioCodeReady && <RouteBadge label="VisioCode" icon={ExternalLink} />}
+                {result.routing.careOnReady && <RouteBadge label="CareOn" icon={Plug} />}
+                {result.routing.claimDraftReady && <RouteBadge label="Claim Draft" icon={FileText} />}
+                {result.routing.documentReady && <RouteBadge label="Documents" icon={Download} />}
+              </div>
             </div>
+
+            {/* Actions */}
             <div className="px-4 py-3 border-t border-border flex items-center gap-2">
               <button onClick={reset} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] hover:bg-accent transition">
                 <RotateCcw className="w-3.5 h-3.5" /> New
@@ -294,22 +377,24 @@ export default function ScribePage() {
       )}
 
       {/* ── REVIEW MODAL ── */}
-      {showReview && soap && (
+      {showReview && result && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={() => setShowReview(false)}>
           <div className="w-full max-w-2xl max-h-[85vh] rounded-lg ring-1 ring-border bg-card flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="px-5 py-3 border-b border-border flex items-center justify-between">
               <div>
-                <h2 className="text-[15px] font-semibold">Review Before Coding</h2>
-                <p className="text-[11px] text-muted-foreground">Document auto-downloads + opens VisioCode for validation.</p>
+                <h2 className="text-[15px] font-semibold">Review Coding Document</h2>
+                <p className="text-[11px] text-muted-foreground">
+                  Confidence: {v?.overallScore}% — {result.specialty.replace("_", " ")} — {a?.icd10Codes.length} codes
+                </p>
               </div>
               <button onClick={() => setShowReview(false)} className="p-1 rounded hover:bg-accent"><X className="w-4 h-4 text-muted-foreground" /></button>
             </div>
             <div className="flex-1 overflow-y-auto p-5">
-              <pre className="text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-muted-foreground">{buildDoc(soap)}</pre>
+              <pre className="text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-muted-foreground">{buildDoc()}</pre>
             </div>
             <div className="px-5 py-3 border-t border-border flex items-center gap-3">
               <button onClick={download} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] hover:bg-accent transition">
-                <Download className="w-3.5 h-3.5" /> Download Only
+                <Download className="w-3.5 h-3.5" /> Download
               </button>
               <div className="flex-1" />
               <button onClick={sendToVisioCode}
@@ -321,5 +406,13 @@ export default function ScribePage() {
         </div>
       )}
     </div>
+  );
+}
+
+function RouteBadge({ label, icon: Icon }: { label: string; icon: React.ElementType }) {
+  return (
+    <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono bg-[var(--color-valid)]/10 text-[var(--color-valid)]">
+      <Icon className="w-2.5 h-2.5" /> {label}
+    </span>
   );
 }
