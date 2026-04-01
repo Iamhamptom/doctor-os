@@ -1,7 +1,10 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
-import { Mic, MicOff, FileText, Loader2, AlertTriangle, CheckCircle, Send, Download, ExternalLink, Save } from "lucide-react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import {
+  Mic, MicOff, FileText, Loader2, AlertTriangle, CheckCircle,
+  Download, ExternalLink, Save, X, ArrowRight, Clock,
+} from "lucide-react";
 
 interface SOAPData {
   soap: { subjective: string; objective: string; assessment: string; plan: string };
@@ -11,17 +14,35 @@ interface SOAPData {
   medications: Array<{ name: string; dosage: string; frequency: string }>;
 }
 
+type ScribeStep = "idle" | "recording" | "transcribing" | "analyzing" | "review" | "sending";
+
 export default function ScribePage() {
-  const [recording, setRecording] = useState(false);
+  const [step, setStep] = useState<ScribeStep>("idle");
   const [transcript, setTranscript] = useState("");
   const [soapData, setSoapData] = useState<SOAPData | null>(null);
-  const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState("");
+  const [showReview, setShowReview] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Recording timer
+  useEffect(() => {
+    if (step === "recording") {
+      timerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (step === "idle") setRecordingTime(0);
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [step]);
+
+  const formatTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
   const startRecording = useCallback(async () => {
     try {
+      setError("");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
       chunksRef.current = [];
@@ -34,112 +55,129 @@ export default function ScribePage() {
         stream.getTracks().forEach(t => t.stop());
         const blob = new Blob(chunksRef.current, { type: "audio/webm" });
         if (blob.size < 1000) {
-          setError("Recording too short. Please speak for at least a few seconds.");
+          setError("Recording too short. Speak for at least a few seconds.");
+          setStep("idle");
           return;
         }
-        await transcribeAudio(blob);
+        await processRecording(blob);
       };
 
       mediaRecorderRef.current = mediaRecorder;
       mediaRecorder.start(1000);
-      setRecording(true);
-      setError("");
+      setStep("recording");
     } catch {
-      setError("Microphone access denied. Please allow microphone in browser settings.");
+      setError("Microphone access denied. Allow microphone in browser settings.");
     }
   }, []);
 
   const stopRecording = useCallback(() => {
     mediaRecorderRef.current?.stop();
-    setRecording(false);
   }, []);
 
-  const transcribeAudio = async (blob: Blob) => {
-    setAnalyzing(true);
+  // Full pipeline: transcribe → analyze → show review
+  const processRecording = async (blob: Blob) => {
+    // Step 1: Transcribe
+    setStep("transcribing");
     try {
       const formData = new FormData();
       formData.append("audio", blob, "recording.webm");
       const res = await fetch("/api/scribe/transcribe", { method: "POST", body: formData });
       const data = await res.json();
-      if (data.transcript) {
-        setTranscript(prev => prev + (prev ? "\n" : "") + data.transcript);
+      if (!data.transcript || data.transcript === "[silence]") {
+        setError("No speech detected. Try again.");
+        setStep("idle");
+        return;
       }
+      const newTranscript = transcript ? transcript + "\n" + data.transcript : data.transcript;
+      setTranscript(newTranscript);
+      await analyzeSOAP(newTranscript);
     } catch {
-      setError("Transcription failed. Check GEMINI_API_KEY.");
+      setError("Transcription failed. Check your connection.");
+      setStep("idle");
     }
-    setAnalyzing(false);
   };
 
-  const analyzeTranscript = async () => {
-    if (!transcript.trim() || transcript.length < 20) {
-      setError("Need at least 20 characters of transcript to analyze.");
-      return;
-    }
-    setAnalyzing(true);
-    setError("");
+  // Step 2: Analyze
+  const analyzeSOAP = async (text: string) => {
+    setStep("analyzing");
     try {
       const res = await fetch("/api/scribe/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript }),
+        body: JSON.stringify({ transcript: text }),
       });
       const data = await res.json();
-      if (data.analysis) setSoapData(data.analysis);
-      else setError("Analysis failed — check API keys.");
+      if (data.analysis) {
+        setSoapData(data.analysis);
+        setStep("review");
+        setShowReview(true); // Auto-pop the review modal
+      } else {
+        setError("SOAP analysis failed.");
+        setStep("idle");
+      }
     } catch {
       setError("Analysis failed.");
+      setStep("idle");
     }
-    setAnalyzing(false);
   };
 
-  const downloadConsultation = (data: SOAPData, transcriptText: string) => {
-    const doc = [
-      "CLINICAL CONSULTATION NOTES",
-      "=" .repeat(40),
+  // Manual analyze (for typed/pasted transcripts)
+  const manualAnalyze = () => {
+    if (transcript.length < 20) {
+      setError("Need at least 20 characters to analyze.");
+      return;
+    }
+    analyzeSOAP(transcript);
+  };
+
+  // Build the coding document
+  const buildCodingDocument = (data: SOAPData): string => {
+    const lines = [
+      "CLINICAL CONSULTATION — CODING DOCUMENT",
+      "=".repeat(45),
       `Date: ${new Date().toLocaleDateString("en-ZA")}`,
+      `Generated by: Doctor OS AI Scribe`,
+      "",
       `Chief Complaint: ${data.chiefComplaint}`,
       "",
+      "DIAGNOSIS CODES (ICD-10 WHO)",
+      "-".repeat(30),
+      ...data.icd10Codes.map(c => `  ${c.code}  ${c.description}  [${c.confidence}%]`),
+      "",
       "SUBJECTIVE",
-      "-".repeat(20),
+      "-".repeat(30),
       data.soap.subjective || "—",
       "",
       "OBJECTIVE",
-      "-".repeat(20),
+      "-".repeat(30),
       data.soap.objective || "—",
       "",
       "ASSESSMENT",
-      "-".repeat(20),
+      "-".repeat(30),
       data.soap.assessment || "—",
       "",
-      "ICD-10 CODES",
-      "-".repeat(20),
-      ...data.icd10Codes.map(c => `${c.code} — ${c.description} (${c.confidence}% confidence)`),
-      "",
       "PLAN",
-      "-".repeat(20),
+      "-".repeat(30),
       data.soap.plan || "—",
-      "",
-      ...(data.redFlags.length > 0 ? [
-        "RED FLAGS",
-        "-".repeat(20),
-        ...data.redFlags.map(f => `⚠ ${f}`),
-        "",
-      ] : []),
-      ...(data.medications.length > 0 ? [
-        "MEDICATIONS",
-        "-".repeat(20),
-        ...data.medications.map(m => `${m.name} ${m.dosage} — ${m.frequency}`),
-        "",
-      ] : []),
-      "TRANSCRIPT",
-      "-".repeat(20),
-      transcriptText,
-      "",
-      "=" .repeat(40),
-      "Generated by Doctor OS — AI Clinical Copilot",
-      "doctor-os.vercel.app",
-    ].join("\n");
+    ];
 
+    if (data.medications.length > 0) {
+      lines.push("", "MEDICATIONS", "-".repeat(30));
+      data.medications.forEach(m => lines.push(`  ${m.name} ${m.dosage} — ${m.frequency}`));
+    }
+
+    if (data.redFlags.length > 0) {
+      lines.push("", "RED FLAGS", "-".repeat(30));
+      data.redFlags.forEach(f => lines.push(`  ⚠ ${f}`));
+    }
+
+    lines.push("", "=".repeat(45), "Ready for clinical coding validation via VisioCode");
+    return lines.join("\n");
+  };
+
+  const downloadDocument = () => {
+    if (!soapData) return;
+    const doc = buildCodingDocument(soapData);
     const blob = new Blob([doc], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -149,72 +187,115 @@ export default function ScribePage() {
     URL.revokeObjectURL(url);
   };
 
-  const buildVisioCodeUrl = (data: SOAPData): string => {
-    const codes = data.icd10Codes.map(c => c.code).join(",");
-    const text = encodeURIComponent(
-      `Consultation from Doctor OS:\n\nChief Complaint: ${data.chiefComplaint}\n\nAssessment: ${data.soap.assessment}\n\nICD-10 Codes: ${codes}\n\nPlan: ${data.soap.plan}`
-    );
-    return `https://visiocode.vercel.app/chat?prompt=${text}`;
+  const sendToVisioCode = () => {
+    if (!soapData) return;
+    setStep("sending");
+    // Download the document first
+    downloadDocument();
+    // Then open VisioCode with the data
+    const codes = soapData.icd10Codes.map(c => c.code).join(", ");
+    const prompt = [
+      `Consultation from Doctor OS:`,
+      ``,
+      `Chief Complaint: ${soapData.chiefComplaint}`,
+      `ICD-10 Codes: ${codes}`,
+      ``,
+      `Assessment: ${soapData.soap.assessment}`,
+      `Plan: ${soapData.soap.plan}`,
+      ``,
+      `Please validate these codes, check scheme compatibility, and suggest any corrections.`,
+    ].join("\n");
+    window.open(`https://visiocode.vercel.app/chat?prompt=${encodeURIComponent(prompt)}`, "_blank");
+    setShowReview(false);
+    setStep("review");
   };
 
   return (
     <div className="p-4 lg:p-6 h-full flex flex-col">
+      {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-semibold">AI Scribe</h1>
-          <p className="text-[11px] text-muted-foreground">Record consultation, generate SOAP notes with ICD-10 codes.</p>
+          <p className="text-[11px] text-muted-foreground">
+            {step === "idle" && "Record a consultation or paste transcript."}
+            {step === "recording" && "Recording... speak naturally."}
+            {step === "transcribing" && "Transcribing audio with Gemini..."}
+            {step === "analyzing" && "Generating SOAP notes + ICD-10 codes..."}
+            {step === "review" && "Review complete. Ready to send for coding."}
+            {step === "sending" && "Sending to VisioCode..."}
+          </p>
         </div>
-        {transcript && !analyzing && (
-          <button
-            onClick={analyzeTranscript}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition"
-          >
-            <Send className="w-3.5 h-3.5" /> Analyze SOAP
-          </button>
-        )}
+        {/* Step indicator */}
+        <div className="flex items-center gap-1.5">
+          <StepDot label="Record" active={step === "recording"} done={["transcribing","analyzing","review","sending"].includes(step)} />
+          <div className="w-4 h-px bg-border" />
+          <StepDot label="Transcribe" active={step === "transcribing"} done={["analyzing","review","sending"].includes(step)} />
+          <div className="w-4 h-px bg-border" />
+          <StepDot label="SOAP" active={step === "analyzing"} done={["review","sending"].includes(step)} />
+          <div className="w-4 h-px bg-border" />
+          <StepDot label="Code" active={step === "review" || step === "sending"} done={step === "sending"} />
+        </div>
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[var(--color-rejected)]/10 text-[var(--color-rejected)] text-[12px] mb-4">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[var(--color-rejected)]/10 text-[var(--color-rejected)] text-[12px] mb-3">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {error}
+          <button onClick={() => setError("")} className="ml-auto"><X className="w-3 h-3" /></button>
         </div>
       )}
 
+      {/* Main Content */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-0">
-        {/* Transcript Panel */}
+        {/* Left: Recording + Transcript */}
         <div className="rounded-lg ring-1 ring-border bg-card flex flex-col overflow-hidden">
           <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Mic className="w-3.5 h-3.5 text-muted-foreground" />
               <span className="text-[13px] font-medium">Transcript</span>
             </div>
-            {analyzing && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
+            {step === "recording" && (
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-full bg-[var(--color-rejected)] animate-pulse" />
+                <span className="text-[12px] font-mono text-[var(--color-rejected)]">{formatTime(recordingTime)}</span>
+              </div>
+            )}
+            {(step === "transcribing" || step === "analyzing") && (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+            )}
           </div>
+
           <div className="flex-1 p-4 overflow-y-auto">
             {transcript ? (
               <pre className="text-[13px] whitespace-pre-wrap font-sans leading-relaxed">{transcript}</pre>
             ) : (
-              <p className="text-[13px] text-muted-foreground">
-                Press the microphone button to start recording. Or paste/type a transcript below.
-              </p>
+              <div className="flex flex-col items-center justify-center h-full text-center">
+                <Mic className="w-10 h-10 text-muted-foreground/20 mb-3" />
+                <p className="text-[13px] text-muted-foreground">Press the record button to start.</p>
+                <p className="text-[11px] text-muted-foreground mt-1">Or type/paste a transcript below.</p>
+              </div>
             )}
           </div>
+
+          {/* Controls */}
           <div className="px-4 py-3 border-t border-border">
             <div className="flex items-center gap-3">
               <button
-                onClick={recording ? stopRecording : startRecording}
-                className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ring-1 ${
-                  recording
-                    ? "bg-[var(--color-rejected)]/20 ring-[var(--color-rejected)] text-[var(--color-rejected)] animate-pulse"
-                    : "bg-accent ring-border text-foreground hover:bg-accent/80"
+                onClick={step === "recording" ? stopRecording : startRecording}
+                disabled={step === "transcribing" || step === "analyzing"}
+                className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ring-2 disabled:opacity-30 ${
+                  step === "recording"
+                    ? "ring-[var(--color-rejected)] bg-[var(--color-rejected)]/10 text-[var(--color-rejected)] animate-pulse"
+                    : "ring-border bg-card text-foreground hover:bg-accent"
                 }`}
               >
-                {recording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                {step === "recording" ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
               </button>
+
               <input
                 type="text"
-                placeholder="Or type/paste transcript here..."
-                className="flex-1 bg-transparent ring-1 ring-border rounded-md px-3 py-2 text-[13px] placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="Type or paste transcript here, press Enter..."
+                className="flex-1 ring-1 ring-border rounded-md px-3 py-2 text-[13px] bg-transparent placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                disabled={step === "recording" || step === "transcribing" || step === "analyzing"}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && e.currentTarget.value.trim()) {
                     setTranscript(prev => prev + (prev ? "\n" : "") + e.currentTarget.value);
@@ -222,47 +303,53 @@ export default function ScribePage() {
                   }
                 }}
               />
+
+              {transcript && step !== "recording" && step !== "transcribing" && step !== "analyzing" && !soapData && (
+                <button
+                  onClick={manualAnalyze}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-foreground text-background text-[12px] font-medium hover:opacity-90 transition shrink-0"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" /> Analyze
+                </button>
+              )}
             </div>
           </div>
         </div>
 
-        {/* SOAP Panel */}
+        {/* Right: SOAP Notes */}
         <div className="rounded-lg ring-1 ring-border bg-card flex flex-col overflow-hidden">
           <div className="px-4 py-2.5 border-b border-border flex items-center gap-2">
             <FileText className="w-3.5 h-3.5 text-muted-foreground" />
             <span className="text-[13px] font-medium">SOAP Notes</span>
             {soapData && <CheckCircle className="w-3 h-3 text-[var(--color-valid)] ml-auto" />}
           </div>
-          <div className="flex-1 p-4 overflow-y-auto space-y-4">
+          <div className="flex-1 p-4 overflow-y-auto space-y-3">
             {soapData ? (
               <>
-                {/* Chief Complaint */}
                 <div className="rounded-md bg-accent px-3 py-2">
-                  <span className="text-[11px] text-muted-foreground uppercase">Chief Complaint</span>
+                  <span className="text-[10px] text-muted-foreground uppercase">Chief Complaint</span>
                   <p className="text-[13px] font-medium">{soapData.chiefComplaint}</p>
                 </div>
 
-                {/* SOAP Sections */}
-                {(["subjective", "objective", "assessment", "plan"] as const).map(section => (
-                  <div key={section}>
-                    <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
-                      {section.charAt(0).toUpperCase()} &mdash; {section}
+                {(["subjective", "objective", "assessment", "plan"] as const).map(s => (
+                  <div key={s}>
+                    <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
+                      {s.charAt(0).toUpperCase()} — {s}
                     </label>
-                    <div className="mt-1 rounded-md ring-1 ring-border bg-background p-3 text-[13px] leading-relaxed min-h-[40px]">
-                      {soapData.soap[section] || "—"}
+                    <div className="mt-1 rounded-md ring-1 ring-border bg-background p-2.5 text-[12px] leading-relaxed min-h-[32px]">
+                      {soapData.soap[s] || "—"}
                     </div>
                   </div>
                 ))}
 
-                {/* ICD-10 Codes */}
                 {soapData.icd10Codes.length > 0 && (
                   <div>
-                    <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">ICD-10 Codes</label>
+                    <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">ICD-10 Codes</label>
                     <div className="mt-1 space-y-1">
                       {soapData.icd10Codes.map((c, i) => (
-                        <div key={i} className="flex items-center gap-2 rounded-md ring-1 ring-border bg-background px-3 py-1.5">
-                          <span className="text-[13px] font-mono font-bold">{c.code}</span>
-                          <span className="text-[12px] text-muted-foreground flex-1">{c.description}</span>
+                        <div key={i} className="flex items-center gap-2 rounded-md ring-1 ring-border bg-background px-2.5 py-1.5">
+                          <span className="text-[12px] font-mono font-bold">{c.code}</span>
+                          <span className="text-[11px] text-muted-foreground flex-1">{c.description}</span>
                           <span className="text-[10px] font-mono text-muted-foreground">{c.confidence}%</span>
                         </div>
                       ))}
@@ -270,74 +357,108 @@ export default function ScribePage() {
                   </div>
                 )}
 
-                {/* Red Flags */}
                 {soapData.redFlags.length > 0 && (
                   <div>
-                    <label className="text-[11px] text-[var(--color-rejected)] uppercase tracking-wider font-medium">Red Flags</label>
-                    <div className="mt-1 space-y-1">
-                      {soapData.redFlags.map((f, i) => (
-                        <div key={i} className="flex items-center gap-2 text-[12px] text-[var(--color-rejected)]">
-                          <AlertTriangle className="w-3 h-3 shrink-0" /> {f}
-                        </div>
-                      ))}
-                    </div>
+                    <label className="text-[10px] text-[var(--color-rejected)] uppercase tracking-wider font-medium">Red Flags</label>
+                    {soapData.redFlags.map((f, i) => (
+                      <div key={i} className="flex items-center gap-1.5 text-[11px] text-[var(--color-rejected)] mt-1">
+                        <AlertTriangle className="w-3 h-3 shrink-0" /> {f}
+                      </div>
+                    ))}
                   </div>
                 )}
 
-                {/* Medications */}
                 {soapData.medications.length > 0 && (
                   <div>
-                    <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">Medications Mentioned</label>
-                    <div className="mt-1 space-y-1">
-                      {soapData.medications.map((m, i) => (
-                        <div key={i} className="text-[12px] font-mono">
-                          {m.name} {m.dosage} — {m.frequency}
-                        </div>
-                      ))}
-                    </div>
+                    <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">Medications</label>
+                    {soapData.medications.map((m, i) => (
+                      <div key={i} className="text-[11px] font-mono mt-0.5">{m.name} {m.dosage} — {m.frequency}</div>
+                    ))}
                   </div>
                 )}
 
-                {/* Action Buttons */}
-                <div className="pt-3 border-t border-border space-y-2">
-                  <p className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">Actions</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <button
-                      onClick={() => downloadConsultation(soapData, transcript)}
-                      className="flex items-center justify-center gap-2 px-3 py-2 rounded-md ring-1 ring-border bg-card text-[12px] font-medium hover:bg-accent transition"
-                    >
-                      <Download className="w-3.5 h-3.5" /> Download Document
-                    </button>
-                    <a
-                      href={buildVisioCodeUrl(soapData)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-center gap-2 px-3 py-2 rounded-md bg-foreground text-background text-[12px] font-medium hover:opacity-90 transition"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" /> Send to VisioCode
-                    </a>
-                    <button
-                      onClick={() => {
-                        // TODO: Save via agent tool
-                        alert("Consultation saved. Use the Agent Chat to save to patient record.");
-                      }}
-                      className="flex items-center justify-center gap-2 px-3 py-2 rounded-md ring-1 ring-border bg-card text-[12px] font-medium hover:bg-accent transition"
-                    >
-                      <Save className="w-3.5 h-3.5" /> Save Consultation
-                    </button>
-                  </div>
+                {/* Action bar */}
+                <div className="pt-3 border-t border-border">
+                  <button
+                    onClick={() => setShowReview(true)}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-md bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> Review &amp; Send to VisioCode
+                  </button>
                 </div>
               </>
             ) : (
-              <div className="flex flex-col items-center justify-center h-full text-center py-12">
-                <FileText className="w-8 h-8 text-muted-foreground/30 mb-3" />
-                <p className="text-[13px] text-muted-foreground">SOAP notes will appear here after analysis.</p>
-                <p className="text-[11px] text-muted-foreground mt-1">Record or type a transcript, then click &quot;Analyze SOAP&quot;.</p>
+              <div className="flex flex-col items-center justify-center h-full text-center py-8">
+                <FileText className="w-10 h-10 text-muted-foreground/20 mb-3" />
+                <p className="text-[13px] text-muted-foreground">SOAP notes auto-generate after recording.</p>
+                <p className="text-[11px] text-muted-foreground mt-1">Record → Transcribe → Analyze → Review → Code</p>
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* ═══ REVIEW MODAL ═══ */}
+      {showReview && soapData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl max-h-[90vh] rounded-lg ring-1 ring-border bg-card flex flex-col overflow-hidden">
+            {/* Modal header */}
+            <div className="px-5 py-3 border-b border-border flex items-center justify-between">
+              <div>
+                <h2 className="text-[15px] font-semibold">Review Before Sending</h2>
+                <p className="text-[11px] text-muted-foreground">Check the coding document, then send to VisioCode for validation.</p>
+              </div>
+              <button onClick={() => setShowReview(false)} className="p-1 rounded hover:bg-accent transition">
+                <X className="w-4 h-4 text-muted-foreground" />
+              </button>
+            </div>
+
+            {/* Document preview */}
+            <div className="flex-1 overflow-y-auto p-5">
+              <pre className="text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-muted-foreground">
+                {buildCodingDocument(soapData)}
+              </pre>
+            </div>
+
+            {/* Modal actions */}
+            <div className="px-5 py-3 border-t border-border flex items-center gap-3">
+              <button
+                onClick={downloadDocument}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] hover:bg-accent transition"
+              >
+                <Download className="w-3.5 h-3.5" /> Download Only
+              </button>
+              <button
+                onClick={() => { setShowReview(false); }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] text-muted-foreground hover:bg-accent transition"
+              >
+                <Save className="w-3.5 h-3.5" /> Save &amp; Close
+              </button>
+              <div className="flex-1" />
+              <button
+                onClick={sendToVisioCode}
+                className="flex items-center gap-2 px-4 py-2 rounded-md bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition"
+              >
+                <ExternalLink className="w-3.5 h-3.5" /> Send to VisioCode
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepDot({ label, active, done }: { label: string; active: boolean; done: boolean }) {
+  return (
+    <div className="flex items-center gap-1">
+      <div className={`w-2 h-2 rounded-full transition-colors ${
+        done ? "bg-[var(--color-valid)]" : active ? "bg-foreground animate-pulse" : "bg-border"
+      }`} />
+      <span className={`text-[10px] hidden sm:inline ${
+        active ? "text-foreground font-medium" : done ? "text-[var(--color-valid)]" : "text-muted-foreground"
+      }`}>{label}</span>
     </div>
   );
 }
