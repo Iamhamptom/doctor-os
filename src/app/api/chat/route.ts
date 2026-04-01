@@ -1,4 +1,5 @@
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { createTools, DOCTOR_OS_SYSTEM_PROMPT } from "@/lib/agent";
 
 export const maxDuration = 60;
@@ -7,14 +8,11 @@ export async function POST(request: Request) {
   try {
     const { messages } = await request.json();
 
-    // TODO: Extract practiceId from auth session
     const practiceId = "demo-practice";
-
-    // Create tools with practiceId baked into the closure
     const tools = createTools(practiceId);
 
     const result = streamText({
-      model: "anthropic/claude-sonnet-4.6" as Parameters<typeof streamText>[0]["model"],
+      model: anthropic("claude-sonnet-4-20250514"), // Direct SDK — ANTHROPIC_API_KEY
       system: DOCTOR_OS_SYSTEM_PROMPT,
       messages: await convertToModelMessages(messages),
       tools,
