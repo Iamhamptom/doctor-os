@@ -142,12 +142,22 @@ IMPORTANT RULES:
 
     console.log(`[pipeline] L4: Evidence ${evidenceScore}/100, KB ${kbResult.kbScore}/100, Combined ${overallScore}/100`);
 
+    // ── L4.5: CLINICAL CODING VALIDATION ──
+    const { runCodingValidation } = await import("@/lib/engines/coding-engine");
+    const codingReport = await runCodingValidation({
+      icd10Codes: analysis.icd10Codes,
+      tariffCodes: kbResult.suggestedTariffs,
+      specialty,
+    });
+
+    console.log(`[pipeline] L4.5: Coding score ${codingReport.codingScore}/100, ${codingReport.rejectionRisks.length} risks, ${codingReport.pmbConditions.length} PMB, ${codingReport.cdlConditions.length} CDL, ready: ${codingReport.readyToSubmit}`);
+
     // ── L5: Routing readiness ──
     const validCodes = kbResult.validatedCodes.filter(c => c.dbMatch && c.isValid);
     const routing = {
       visioCodeReady: validCodes.length > 0,
       careOnReady: true,
-      claimDraftReady: validCodes.length > 0,
+      claimDraftReady: codingReport.readyToSubmit,
       documentReady: analysis.soap.subjective.length > 0 || analysis.soap.assessment.length > 0,
     };
 
@@ -177,6 +187,20 @@ IMPORTANT RULES:
         pmbCodes: kbResult.validatedCodes.filter(c => c.isPMB).map(c => c.code),
         nappiMatches: kbResult.validatedMedications.filter(m => m.found).length,
         nappiTotal: kbResult.validatedMedications.length,
+      },
+      // Clinical coding validation (VisioCode-equivalent)
+      coding: {
+        score: codingReport.codingScore,
+        readyToSubmit: codingReport.readyToSubmit,
+        summary: codingReport.summary,
+        scheme: codingReport.scheme?.name || null,
+        schemeCompatible: codingReport.schemeCompatible,
+        preAuthRequired: codingReport.preAuthRequired,
+        rejectionRisks: codingReport.rejectionRisks,
+        specificityIssues: codingReport.specificityIssues,
+        pmbConditions: codingReport.pmbConditions,
+        cdlConditions: codingReport.cdlConditions,
+        tariffPairings: codingReport.tariffPairings.slice(0, 3),
       },
     };
 

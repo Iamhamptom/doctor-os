@@ -499,6 +499,49 @@ export default function ScribePage() {
                 </div>
               )}
 
+              {/* Clinical Coding (VisioCode-equivalent) */}
+              {(result as any).coding && (
+                <div className={`rounded-md ring-1 p-3 space-y-1.5 ${
+                  (result as any).coding.readyToSubmit
+                    ? "ring-[var(--color-valid)]/30 bg-[var(--color-valid)]/5"
+                    : "ring-[var(--color-warning)]/30 bg-[var(--color-warning)]/5"
+                }`}>
+                  <label className={`text-[10px] uppercase font-medium flex items-center gap-1 ${
+                    (result as any).coding.readyToSubmit ? "text-[var(--color-valid)]" : "text-[var(--color-warning)]"
+                  }`}>
+                    <Stethoscope className="w-3 h-3" /> Clinical Coding
+                    <span className="ml-auto font-mono">{(result as any).coding.score}%</span>
+                  </label>
+                  <p className="text-[11px] font-mono">{(result as any).coding.summary}</p>
+
+                  {(result as any).coding.pmbConditions?.length > 0 && (
+                    <div className="text-[10px] text-[var(--color-valid)]">
+                      PMB: {(result as any).coding.pmbConditions.map((p: any) => `${p.code} (${p.description})`).join(", ")}
+                    </div>
+                  )}
+                  {(result as any).coding.cdlConditions?.length > 0 && (
+                    <div className="text-[10px] text-[var(--color-valid)]">
+                      CDL: {(result as any).coding.cdlConditions.map((c: any) => `${c.code} (${c.description})`).join(", ")}
+                    </div>
+                  )}
+                  {(result as any).coding.preAuthRequired?.length > 0 && (
+                    <div className="text-[10px] text-[var(--color-warning)]">
+                      Pre-auth needed: {(result as any).coding.preAuthRequired.join(", ")}
+                    </div>
+                  )}
+                  {(result as any).coding.rejectionRisks?.filter((r: any) => r.severity === "high").map((r: any, i: number) => (
+                    <div key={i} className="text-[10px] text-[var(--color-rejected)] flex items-start gap-1">
+                      <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" /> {r.code}: {r.risk}
+                    </div>
+                  ))}
+                  {(result as any).coding.specificityIssues?.map((s: any, i: number) => (
+                    <div key={i} className="text-[10px] text-[var(--color-warning)]">
+                      {s.code}: {s.issue}{s.suggestion ? ` → ${s.suggestion}` : ""}
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {/* Linked Evidence summary */}
               <div className="rounded-md bg-accent px-3 py-2">
                 <label className="text-[10px] text-muted-foreground uppercase font-medium">Linked Evidence</label>
