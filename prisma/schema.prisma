@@ -1,0 +1,370 @@
+// Doctor OS — Clinical Operating System
+// 18 models for the standalone doctor product
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ── Core ────────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  name          String
+  passwordHash  String?
+  hpcsaNumber   String?  // Health Professions Council SA registration
+  qualification String?  // e.g. MBChB, BDS
+  role          String   @default("doctor") // doctor, receptionist, nurse, admin
+  practiceId    String?
+  practice      Practice? @relation(fields: [practiceId], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Practice {
+  id              String   @id @default(cuid())
+  name            String
+  practiceNumber  String?  // PCNS practice number (e.g. 0140001234)
+  address         String?
+  phone           String?
+  email           String?
+  province        String?
+  discipline      String?  @default("general_practice") // general_practice, specialist, dental, optometry
+  billingEntity   String?  // For claims submission
+
+  // Staff
+  users           User[]
+
+  // Clinical
+  patients        Patient[]
+  consultations   Consultation[]
+  bookings        Booking[]
+  checkIns        CheckIn[]
+  referrals       Referral[]
+  recallItems     RecallItem[]
+  claims          Claim[]
+  invoices        Invoice[]
+  documents       Document[]
+  chatThreads     ChatThread[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// ── Clinical ────────────────────────────────────────────
+
+model Patient {
+  id            String   @id @default(cuid())
+  practiceId    String
+  practice      Practice @relation(fields: [practiceId], references: [id])
+
+  // Demographics
+  name          String
+  dateOfBirth   String?
+  gender        String?  // male, female, other
+  idNumber      String?  // SA ID number (13 digits) — cross-system key
+  phone         String?
+  email         String?
+  address       String?
+
+  // Medical aid
+  medicalAid    String?  // Scheme name e.g. Discovery Health
+  medicalAidNo  String?  // Membership number
+  medicalAidPlan String? // Plan/option e.g. Classic Comprehensive
+
+  // Clinical
+  allergies     Allergy[]
+  medications   Medication[]
+  medicalRecords MedicalRecord[]
+  vitals        Vitals[]
+  consultations Consultation[]
+  bookings      Booking[]
+  checkIns      CheckIn[]
+  referrals     Referral[]
+  recallItems   RecallItem[]
+  invoices      Invoice[]
+  documents     Document[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([practiceId])
+  @@index([idNumber])
+}
+
+model Allergy {
+  id        String   @id @default(cuid())
+  patientId String
+  patient   Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  name      String   // e.g. Penicillin
+  severity  String?  // mild, moderate, severe
+  reaction  String?  // e.g. Anaphylaxis, Rash
+  createdAt DateTime @default(now())
+}
+
+model Medication {
+  id          String   @id @default(cuid())
+  patientId   String
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  name        String   // e.g. Amlodipine 5mg
+  nappiCode   String?  // 7-digit NAPPI
+  dosage      String?  // e.g. 5mg
+  frequency   String?  // e.g. Once daily
+  isChronic   Boolean  @default(false)
+  startDate   String?
+  endDate     String?
+  createdAt   DateTime @default(now())
+}
+
+model MedicalRecord {
+  id          String   @id @default(cuid())
+  patientId   String
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  type        String   @default("consultation") // consultation, lab, imaging, procedure, note
+  title       String
+  description String?  @db.Text
+  diagnosis   String?  // ICD-10 codes joined with ";"
+  treatment   String?  @db.Text
+  provider    String?  // Doctor name or "AI Clinical Scribe"
+  createdAt   DateTime @default(now())
+
+  @@index([patientId])
+}
+
+model Vitals {
+  id             String   @id @default(cuid())
+  patientId      String
+  patient        Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  bloodPressure  String?  // e.g. 120/80
+  heartRate      Int?
+  temperature    Float?   // Celsius
+  weight         Float?   // kg
+  height         Float?   // cm
+  oxygenSat      Int?     // SpO2 %
+  respiratoryRate Int?
+  notes          String?
+  createdAt      DateTime @default(now())
+}
+
+// ── Consultation (core clinical artifact) ───────────────
+
+model Consultation {
+  id            String   @id @default(cuid())
+  patientId     String
+  patient       Patient  @relation(fields: [patientId], references: [id])
+  practiceId    String
+  practice      Practice @relation(fields: [practiceId], references: [id])
+
+  // Scribe
+  transcript      String? @db.Text
+  soapSubjective  String? @db.Text
+  soapObjective   String? @db.Text
+  soapAssessment  String? @db.Text
+  soapPlan        String? @db.Text
+
+  // Coding
+  icd10Codes    Json?    // [{code, description, confidence}]
+  nappiCodes    Json?    // [{code, name, dosage}]
+  tariffCodes   Json?    // [{code, description}]
+  redFlags      Json?    // string[]
+
+  // Status
+  status          String @default("in_progress") // in_progress, completed, billed
+  chiefComplaint  String?
+
+  // Relations
+  claim         Claim?
+  documents     Document[]
+  referral      Referral?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([practiceId])
+  @@index([patientId])
+}
+
+// ── Operations ──────────────────────────────────────────
+
+model Booking {
+  id            String   @id @default(cuid())
+  practiceId    String
+  practice      Practice @relation(fields: [practiceId], references: [id])
+  patientId     String?
+  patient       Patient? @relation(fields: [patientId], references: [id])
+  patientName   String
+  service       String?  // e.g. General Consultation, Follow-up, Dental
+  scheduledAt   DateTime
+  duration      Int      @default(30) // minutes
+  status        String   @default("scheduled") // scheduled, confirmed, completed, cancelled, no_show
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([practiceId, scheduledAt])
+}
+
+model CheckIn {
+  id          String   @id @default(cuid())
+  practiceId  String
+  practice    Practice @relation(fields: [practiceId], references: [id])
+  patientId   String?
+  patient     Patient? @relation(fields: [patientId], references: [id])
+  patientName String
+  status      String   @default("waiting") // waiting, in_consultation, checked_out, no_show
+  arrivedAt   DateTime @default(now())
+  seenAt      DateTime? // when doctor starts consultation
+  leftAt      DateTime? // when patient leaves
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  @@index([practiceId, status])
+}
+
+model Referral {
+  id              String   @id @default(cuid())
+  practiceId      String
+  practice        Practice @relation(fields: [practiceId], references: [id])
+  patientId       String
+  patient         Patient  @relation(fields: [patientId], references: [id])
+  consultationId  String?  @unique
+  consultation    Consultation? @relation(fields: [consultationId], references: [id])
+  specialistName  String
+  specialistType  String?  // e.g. Cardiologist, Orthopaedic
+  indication      String?  @db.Text
+  urgency         String   @default("routine") // routine, urgent, emergency
+  status          String   @default("pending") // pending, accepted, booked, completed, declined
+  appointmentDate DateTime?
+  feedbackNote    String?  @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model RecallItem {
+  id          String   @id @default(cuid())
+  practiceId  String
+  practice    Practice @relation(fields: [practiceId], references: [id])
+  patientId   String
+  patient     Patient  @relation(fields: [patientId], references: [id])
+  reason      String   // e.g. "HbA1c follow-up", "Dental check-up", "Chronic medication review"
+  dueDate     DateTime
+  status      String   @default("pending") // pending, contacted, booked, completed, overdue
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([practiceId, dueDate])
+}
+
+// ── Billing ─────────────────────────────────────────────
+
+model Invoice {
+  id          String   @id @default(cuid())
+  practiceId  String
+  practice    Practice @relation(fields: [practiceId], references: [id])
+  patientId   String
+  patient     Patient  @relation(fields: [patientId], references: [id])
+  lineItems   Json     // [{description, icd10Code, tariffCode, nappiCode, amount}]
+  totalAmount Float
+  status      String   @default("draft") // draft, sent, paid, overdue, cancelled
+  paidAmount  Float    @default(0)
+  payments    Payment[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id])
+  amount    Float
+  method    String   // cash, card, eft, medical_aid
+  reference String?
+  createdAt DateTime @default(now())
+}
+
+model Claim {
+  id              String   @id @default(cuid())
+  practiceId      String
+  practice        Practice @relation(fields: [practiceId], references: [id])
+  consultationId  String?  @unique
+  consultation    Consultation? @relation(fields: [consultationId], references: [id])
+
+  // Patient details (denormalized for claims)
+  patientName     String
+  patientIdNumber String?
+  medicalAid      String?
+  medicalAidNo    String?
+
+  // Claim data
+  icd10Codes      Json     // [{code, description}]
+  tariffCodes     Json     // [{code, description, amount}]
+  nappiCodes      Json?    // [{code, name, quantity, amount}]
+  totalAmount     Float
+
+  // Status
+  status          String   @default("drafted") // drafted, validated, submitted, accepted, paid, rejected, appealed
+  switchingHouse  String?  // healthbridge, switchon, medikredit
+  submittedAt     DateTime?
+  responseCode    String?
+  rejectionReason String?  @db.Text
+  paidAmount      Float?
+  paidAt          DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([practiceId, status])
+}
+
+// ── Documents ───────────────────────────────────────────
+
+model Document {
+  id              String   @id @default(cuid())
+  practiceId      String
+  practice        Practice @relation(fields: [practiceId], references: [id])
+  patientId       String?
+  patient         Patient? @relation(fields: [patientId], references: [id])
+  consultationId  String?
+  consultation    Consultation? @relation(fields: [consultationId], references: [id])
+
+  type            String   // prescription, referral_letter, sick_note, saraa_motivation, clinical_notes
+  title           String
+  content         String   @db.Text // Markdown content
+  pdfUrl          String?  // Supabase Storage URL
+  sentVia         String?  // email, whatsapp, print
+  sentTo          String?  // Email address or phone
+  sentAt          DateTime?
+
+  createdAt       DateTime @default(now())
+
+  @@index([practiceId])
+}
+
+// ── AI ──────────────────────────────────────────────────
+
+model ChatThread {
+  id          String   @id @default(cuid())
+  practiceId  String
+  practice    Practice @relation(fields: [practiceId], references: [id])
+  userId      String?
+  title       String?
+  messages    ChatMessage[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  threadId  String
+  thread    ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  role      String   // user, assistant, tool
+  content   String   @db.Text
+  toolCalls Json?    // AI SDK tool call data
+  createdAt DateTime @default(now())
+}
