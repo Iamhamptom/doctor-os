@@ -24,7 +24,7 @@ export default function LandingPage() {
       {/* Hero */}
       <section className="px-6 py-20 text-center">
         <div className="max-w-2xl mx-auto">
-          <p className="text-[11px] font-mono text-muted-foreground mb-4">38 tools &middot; 61K codes &middot; 6 schemes &middot; Claude Sonnet 4.6</p>
+          <p className="text-[11px] font-mono text-muted-foreground mb-4">38 tools &middot; 61K codes &middot; 6 schemes &middot; Visio AI Engine</p>
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight leading-tight">
             AI Clinical Copilot<br />for South African Doctors
           </h1>
@@ -52,7 +52,7 @@ export default function LandingPage() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-px rounded-lg ring-1 ring-border overflow-hidden">
             <StepBlock step="1" title="Morning Briefing" desc="Say 'Good morning' — get appointments, recalls, alerts for the day." />
             <StepBlock step="2" title="Queue Management" desc="Check in patients, see who's waiting, start consultations." />
-            <StepBlock step="3" title="AI Scribe" desc="Record the consultation. Gemini transcribes in real-time." />
+            <StepBlock step="3" title="AI Scribe" desc="Record the consultation. Visio AI transcribes in real-time." />
             <StepBlock step="4" title="SOAP Notes" desc="Transcript becomes structured SOAP with ICD-10 codes auto-suggested." />
             <StepBlock step="5" title="Drug Safety" desc="Micromedex checks interactions, allergies, therapeutic duplication." />
             <StepBlock step="6" title="Documents" desc="Prescriptions, referrals, sick notes, SARAA motivations — instant PDF." />
