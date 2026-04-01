@@ -143,11 +143,55 @@ export default function ScribePage() {
 
   const sendToVisioCode = () => {
     if (!result) return;
-    download();
-    const codes = result.analysis.icd10Codes.map(c => c.code).join(", ");
-    const p = `Doctor OS consultation:\nSpecialty: ${result.specialty}\nChief Complaint: ${result.analysis.chiefComplaint}\nICD-10: ${codes}\nAssessment: ${result.analysis.soap.assessment}\nPlan: ${result.analysis.soap.plan}\n\nValidate codes, check scheme compatibility, suggest corrections.`;
-    window.open(`https://visiocode.vercel.app/chat?prompt=${encodeURIComponent(p)}`, "_blank");
+    const a = result.analysis;
+    const codes = a.icd10Codes.map(c => `${c.code} (${c.description})`).join(", ");
+    const meds = a.medications.map(m => `${m.name} ${m.dosage}`).join(", ");
+    // Seamless handoff — no download, passes data via URL
+    const prompt = [
+      `CONSULTATION FROM DOCTOR OS — VALIDATE & CODE`,
+      ``, `Chief Complaint: ${a.chiefComplaint}`,
+      `Specialty: ${result.specialty}`,
+      ``, `ICD-10 Codes: ${codes}`,
+      meds ? `Medications: ${meds}` : "",
+      ``, `Assessment: ${a.soap.assessment}`,
+      `Plan: ${a.soap.plan}`,
+      ``, `Validate all codes (WHO ICD-10 SA), check scheme compatibility, suggest corrections, flag rejection risks.`,
+    ].filter(Boolean).join("\n");
+    window.open(`https://visiocode.vercel.app/chat?prompt=${encodeURIComponent(prompt)}`, "_blank");
+  };
+
+  // ── Approve, Save, Send — one button ──
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const approveAndSend = async () => {
+    if (!result) return;
+    setSaving(true);
+    setEditedConfidence(100);
+    const originalDoc = buildDoc();
+    const doctorEdited = editedDoc !== originalDoc && editedDoc !== "";
+    try {
+      await fetch("/api/scribe/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transcript: result.transcript,
+          soap: result.analysis.soap,
+          icd10Codes: result.analysis.icd10Codes,
+          redFlags: result.analysis.redFlags,
+          chiefComplaint: result.analysis.chiefComplaint,
+          verified: true,
+          doctorEdited,
+          editedDocument: editedDoc || undefined,
+          originalDocument: originalDoc,
+        }),
+      });
+      setSaved(true);
+      speak("Verified and saved. Opening VisioCode.");
+    } catch { /* still send */ }
+    setSaving(false);
     setShowReview(false);
+    sendToVisioCode();
   };
 
   const openReview = () => {
@@ -174,7 +218,7 @@ export default function ScribePage() {
     }
   };
 
-  const reset = () => { setPhase("ready"); setResult(null); setShowReview(false); setError(""); setSeconds(0); setEditedDoc(""); };
+  const reset = () => { setPhase("ready"); setResult(null); setShowReview(false); setError(""); setSeconds(0); setEditedDoc(""); setSaved(false); };
 
   const a = result?.analysis;
   const v = result?.validation;
@@ -435,18 +479,29 @@ export default function ScribePage() {
                 spellCheck={false}
               />
             </div>
-            <div className="px-5 py-3 border-t border-border flex items-center gap-3">
-              <button onClick={download} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] hover:bg-accent transition">
-                <Download className="w-3.5 h-3.5" /> Download
+            <div className="px-5 py-3 border-t border-border space-y-2">
+              {/* Primary action — big green button */}
+              <button
+                onClick={approveAndSend}
+                disabled={saving}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-md bg-[var(--color-valid)]/20 ring-1 ring-[var(--color-valid)]/50 text-[var(--color-valid)] text-[14px] font-semibold hover:bg-[var(--color-valid)]/30 transition disabled:opacity-50"
+              >
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                {saving ? "Saving & sending..." : "Approve, Save & Send to VisioCode"}
               </button>
-              <button onClick={() => { setEditedConfidence(100); }} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-[var(--color-valid)]/50 text-[var(--color-valid)] text-[12px] hover:bg-[var(--color-valid)]/10 transition">
-                <CheckCircle className="w-3.5 h-3.5" /> Mark as Verified (100%)
-              </button>
-              <div className="flex-1" />
-              <button onClick={sendToVisioCode}
-                className="flex items-center gap-2 px-4 py-2 rounded-md bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition">
-                <ExternalLink className="w-3.5 h-3.5" /> Send to VisioCode <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+              {/* Secondary actions */}
+              <div className="flex items-center gap-3">
+                <button onClick={download} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md ring-1 ring-border text-[11px] text-muted-foreground hover:bg-accent transition">
+                  <Download className="w-3 h-3" /> Download copy
+                </button>
+                <button onClick={() => { setEditedConfidence(100); }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md ring-1 ring-border text-[11px] text-muted-foreground hover:bg-accent transition">
+                  <CheckCircle className="w-3 h-3" /> Set 100%
+                </button>
+                <div className="flex-1" />
+                <button onClick={() => setShowReview(false)} className="text-[11px] text-muted-foreground hover:text-foreground transition">
+                  Keep editing
+                </button>
+              </div>
             </div>
           </div>
         </div>

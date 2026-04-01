@@ -1,12 +1,13 @@
 import { supabase } from "@/lib/db";
+import { recordFeedback } from "@/lib/ai/feedback-loop";
 
 export async function POST(request: Request) {
   try {
     const data = await request.json();
     const practiceId = data.practiceId || "demo-practice";
 
-    // 1. Save consultation
-    const { data: consultation, error: consultError } = await supabase
+    // 1. Save consultation with full transcript
+    const { data: consultation, error: err } = await supabase
       .from("dos_consultations")
       .insert({
         patient_id: data.patientId || null,
@@ -20,14 +21,14 @@ export async function POST(request: Request) {
         nappi_codes: data.nappiCodes || [],
         red_flags: data.redFlags || [],
         chief_complaint: data.chiefComplaint,
-        status: "completed",
+        status: data.verified ? "verified" : "completed",
       })
       .select()
       .single();
 
-    if (consultError) {
-      console.error("[scribe/save] Consultation save error:", consultError);
-      return Response.json({ error: "Failed to save consultation" }, { status: 500 });
+    if (err) {
+      console.error("[scribe/save] Error:", err);
+      return Response.json({ error: "Save failed" }, { status: 500 });
     }
 
     // 2. Save medical record for patient timeline
@@ -35,20 +36,15 @@ export async function POST(request: Request) {
       await supabase.from("dos_medical_records").insert({
         patient_id: data.patientId,
         type: "consultation",
-        title: `AI Scribe — ${data.chiefComplaint || "Consultation"}`,
-        description: JSON.stringify({
-          soap: data.soap,
-          redFlags: data.redFlags,
-        }),
-        diagnosis: data.icd10Codes?.map((c: { code: string; description: string }) =>
-          `${c.code}: ${c.description}`
-        ).join("; "),
+        title: `Consultation — ${data.chiefComplaint || "General"}`,
+        description: JSON.stringify({ soap: data.soap, redFlags: data.redFlags, transcript: data.transcript }),
+        diagnosis: data.icd10Codes?.map((c: { code: string; description: string }) => `${c.code}: ${c.description}`).join("; "),
         treatment: data.soap?.plan,
-        provider: "Doctor OS AI Scribe",
+        provider: "Visio AI Scribe",
       });
     }
 
-    // 3. Generate claim draft if ICD-10 codes present
+    // 3. Auto-draft claim
     let claimId = null;
     if (data.icd10Codes?.length > 0 && data.patientId) {
       const { data: patient } = await supabase
@@ -74,22 +70,44 @@ export async function POST(request: Request) {
           })
           .select("id")
           .single();
-
         claimId = claim?.id;
       }
     }
 
-    // 4. CareOn sync flag (for hospital consultations)
-    const syncStatus = {
-      careon: { ready: true, synced: false, message: "Ready to sync via HL7v2 ADT when hospital endpoint configured" },
-      heal: { ready: true, synced: false, message: "Ready to sync when A2D24 API published" },
-    };
+    // 4. Record as feedback if doctor edited (learning)
+    if (data.doctorEdited && data.editedDocument) {
+      recordFeedback({
+        persona: "doctor-scribe",
+        query: data.transcript?.slice(0, 200) || "",
+        response: data.originalDocument || "",
+        type: "correction",
+        correctedResponse: data.editedDocument,
+      });
+    }
+
+    // 5. Save to chat history
+    const { data: thread } = await supabase
+      .from("dos_chat_threads")
+      .insert({ practice_id: practiceId, title: `Scribe — ${data.chiefComplaint || "Consultation"}` })
+      .select("id")
+      .single();
+
+    if (thread) {
+      await supabase.from("dos_chat_messages").insert([
+        { thread_id: thread.id, role: "user", content: `[Transcript]\n${data.transcript}` },
+        { thread_id: thread.id, role: "assistant", content: data.editedDocument || data.originalDocument || JSON.stringify(data.soap) },
+      ]);
+    }
 
     return Response.json({
       saved: true,
       consultationId: consultation.id,
       claimId,
-      syncStatus,
+      threadId: thread?.id,
+      syncStatus: {
+        careon: { ready: true, message: "Ready for HL7v2 ADT sync" },
+        heal: { ready: true, message: "Ready for A2D24 sync" },
+      },
     });
   } catch (error) {
     console.error("[scribe/save] Error:", error);
