@@ -3,74 +3,99 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Home, MessageCircle, Users, Mic, FileText, Receipt,
-  CreditCard, Download, Settings, Activity,
+  Stethoscope, MessageCircle, Users, Mic, FileText, Receipt,
+  CreditCard, Download, Settings, Activity, Search, Shield,
+  LayoutDashboard, Plug,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const NAV_ITEMS = [
-  { href: "/dashboard", label: "Home", icon: Home },
-  { href: "/dashboard/chat", label: "Agent Chat", icon: MessageCircle },
-  { href: "/dashboard/queue", label: "Queue", icon: Activity },
-  { href: "/dashboard/patients", label: "Patients", icon: Users },
-  { href: "/dashboard/scribe", label: "AI Scribe", icon: Mic },
-  { href: "/dashboard/documents", label: "Documents", icon: FileText },
-  { href: "/dashboard/claims", label: "Claims", icon: Receipt },
-  { href: "/dashboard/billing", label: "Billing", icon: CreditCard },
-  { href: "/dashboard/exports", label: "Exports", icon: Download },
-  { href: "/dashboard/settings", label: "Settings", icon: Settings },
+const NAV_GROUPS = [
+  {
+    items: [
+      { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/dashboard/chat", label: "Agent", icon: MessageCircle },
+    ],
+  },
+  {
+    label: "Clinical",
+    items: [
+      { href: "/dashboard/scribe", label: "AI Scribe", icon: Mic },
+      { href: "/dashboard/coding", label: "Clinical Coding", icon: Search },
+      { href: "/dashboard/queue", label: "Queue", icon: Activity },
+      { href: "/dashboard/patients", label: "Patients", icon: Users },
+    ],
+  },
+  {
+    label: "Tools",
+    items: [
+      { href: "/dashboard/documents", label: "Documents", icon: FileText },
+      { href: "/dashboard/claims", label: "Claims", icon: Receipt },
+      { href: "/dashboard/billing", label: "Billing", icon: CreditCard },
+      { href: "/dashboard/exports", label: "Exports", icon: Download },
+    ],
+  },
+  {
+    label: "System",
+    items: [
+      { href: "/dashboard/integrations", label: "Integrations", icon: Plug },
+      { href: "/dashboard/settings", label: "Settings", icon: Settings },
+    ],
+  },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="w-16 lg:w-56 h-full bg-[var(--sidebar)] border-r border-white/5 flex flex-col py-4 shrink-0">
+    <aside className="hidden lg:flex w-52 h-screen sticky top-0 flex-col border-r border-border bg-background">
       {/* Logo */}
-      <div className="px-3 lg:px-4 mb-6">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-[#3DA9D1] flex items-center justify-center text-white font-bold text-sm">
-            D
-          </div>
-          <span className="hidden lg:block text-sm font-semibold tracking-tight">
-            Doctor OS
-          </span>
-        </div>
+      <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+        <Stethoscope className="w-4 h-4 text-foreground" />
+        <span className="text-[13px] font-semibold tracking-tight">Doctor OS</span>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-2 space-y-1">
-        {NAV_ITEMS.map((item) => {
-          const isActive = item.href === "/dashboard"
-            ? pathname === "/dashboard"
-            : pathname.startsWith(item.href);
+      <nav className="flex-1 overflow-y-auto py-2">
+        {NAV_GROUPS.map((group, gi) => (
+          <div key={gi} className="mb-1">
+            {group.label && (
+              <div className="px-4 pt-3 pb-1">
+                <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                  {group.label}
+                </span>
+              </div>
+            )}
+            {group.items.map((item) => {
+              const isActive = item.href === "/dashboard"
+                ? pathname === "/dashboard"
+                : pathname.startsWith(item.href);
 
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                "flex items-center gap-3 px-2 lg:px-3 py-2 rounded-lg text-sm transition-all",
-                isActive
-                  ? "bg-[#3DA9D1]/15 text-[#3DA9D1] font-medium"
-                  : "text-white/60 hover:text-white hover:bg-white/5"
-              )}
-            >
-              <item.icon className="w-4 h-4 shrink-0" />
-              <span className="hidden lg:block">{item.label}</span>
-            </Link>
-          );
-        })}
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "flex items-center gap-2 mx-2 px-2 py-[5px] rounded-md text-[13px] transition-colors",
+                    isActive
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                  )}
+                >
+                  <item.icon className="w-3.5 h-3.5 shrink-0" />
+                  {item.label}
+                </Link>
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
-      {/* Bottom */}
-      <div className="px-3 lg:px-4 pt-4 border-t border-white/5">
+      {/* Tools badge */}
+      <div className="px-4 py-3 border-t border-border">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-full bg-[#3DA9D1]/20 flex items-center justify-center text-[#3DA9D1] text-xs font-medium">
-            Dr
-          </div>
-          <span className="hidden lg:block text-xs text-white/50 truncate">
-            Demo Practice
+          <Shield className="w-3 h-3 text-muted-foreground" />
+          <span className="text-[11px] text-muted-foreground font-mono">
+            38 tools · 61K codes
           </span>
         </div>
       </div>
