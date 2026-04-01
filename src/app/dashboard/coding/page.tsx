@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Search, Loader2, CheckCircle, AlertTriangle, XCircle, Pill, Hash } from "lucide-react";
+import { Search, Loader2, CheckCircle, AlertTriangle, XCircle, Pill, Hash, ExternalLink, Upload } from "lucide-react";
 
 interface CodeResult {
   type: "icd10" | "nappi" | "tariff";
@@ -38,9 +38,36 @@ export default function ClinicalCodingPage() {
 
   return (
     <div className="p-4 lg:p-6 space-y-4">
-      <div>
-        <h1 className="text-lg font-semibold">Clinical Coding</h1>
-        <p className="text-[13px] text-muted-foreground">Search ICD-10 codes, NAPPI medicines, and CCSA tariffs.</p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-lg font-semibold">Clinical Coding</h1>
+          <p className="text-[13px] text-muted-foreground">Search ICD-10 codes, NAPPI medicines, and CCSA tariffs.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-md ring-1 ring-border bg-card text-[12px] text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer transition">
+            <Upload className="w-3.5 h-3.5" /> Upload Notes
+            <input type="file" accept=".txt,.csv,.pdf" className="hidden" onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const text = reader.result as string;
+                  const url = `https://visiocode.vercel.app/chat?prompt=${encodeURIComponent(text.slice(0, 2000))}`;
+                  window.open(url, "_blank");
+                };
+                reader.readAsText(file);
+              }
+            }} />
+          </label>
+          <a
+            href="https://visiocode.vercel.app/chat"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-foreground text-background text-[12px] font-medium hover:opacity-90 transition"
+          >
+            <ExternalLink className="w-3.5 h-3.5" /> Open VisioCode
+          </a>
+        </div>
       </div>
 
       {/* Search */}
