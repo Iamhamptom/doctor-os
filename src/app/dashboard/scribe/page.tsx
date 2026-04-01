@@ -2,9 +2,8 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
-  Mic, MicOff, FileText, Loader2, AlertTriangle, CheckCircle,
-  Download, ExternalLink, Save, X, ArrowRight, Volume2, VolumeX,
-  UserCircle, Plug, Clock,
+  Mic, Square, FileText, Loader2, AlertTriangle, CheckCircle,
+  Download, ExternalLink, ArrowRight, Volume2, VolumeX, X, RotateCcw,
 } from "lucide-react";
 
 interface SOAPData {
@@ -15,491 +14,411 @@ interface SOAPData {
   medications: Array<{ name: string; dosage: string; frequency: string }>;
 }
 
-type ScribeStep = "idle" | "recording" | "transcribing" | "analyzing" | "review" | "saving" | "done";
-
 export default function ScribePage() {
-  const [step, setStep] = useState<ScribeStep>("idle");
+  const [phase, setPhase] = useState<"ready" | "recording" | "processing" | "done">("ready");
   const [transcript, setTranscript] = useState("");
-  const [soapData, setSoapData] = useState<SOAPData | null>(null);
+  const [soap, setSoap] = useState<SOAPData | null>(null);
   const [error, setError] = useState("");
   const [showReview, setShowReview] = useState(false);
-  const [recordingTime, setRecordingTime] = useState(0);
-  const [voiceEnabled, setVoiceEnabled] = useState(true);
-  const [selectedPatient, setSelectedPatient] = useState("");
-  const [saveResult, setSaveResult] = useState<{ consultationId?: string; claimId?: string; syncStatus?: Record<string, { ready: boolean; message: string }> } | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const [seconds, setSeconds] = useState(0);
+  const [voiceOn, setVoiceOn] = useState(true);
+  const [statusText, setStatusText] = useState("");
+  const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
-  // Demo patients
-  const PATIENTS = [
-    { id: "pat-001", name: "Sipho Mthembu", condition: "Hypertension, Diabetes" },
-    { id: "pat-002", name: "Thandiwe Dlamini", condition: "General" },
-    { id: "pat-003", name: "Johannes Pretorius", condition: "Diabetes, Hypertension" },
-  ];
-
+  // Timer
   useEffect(() => {
-    if (step === "recording") {
-      timerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (step === "idle") setRecordingTime(0);
+    if (phase === "recording") {
+      setSeconds(0);
+      timerRef.current = setInterval(() => setSeconds(s => s + 1), 1000);
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [step]);
+  }, [phase]);
 
   const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
-  // ── Voice feedback via ElevenLabs ──
   const speak = useCallback(async (text: string) => {
-    if (!voiceEnabled) return;
+    if (!voiceOn) return;
     try {
-      const res = await fetch("/api/voice", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) return;
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
+      const r = await fetch("/api/voice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      if (!r.ok) return;
+      const blob = await r.blob();
+      const audio = new Audio(URL.createObjectURL(blob));
       audio.play();
-      audio.onended = () => URL.revokeObjectURL(url);
-    } catch { /* silent fail */ }
-  }, [voiceEnabled]);
+    } catch { /* silent */ }
+  }, [voiceOn]);
 
-  // ── Recording ──
-  const startRecording = useCallback(async () => {
+  // ── START: one tap ──
+  const start = useCallback(async () => {
+    setError("");
+    setTranscript("");
+    setSoap(null);
+    setShowReview(false);
+    setStatusText("");
+
     try {
-      setError("");
-      setSaveResult(null);
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      streamRef.current = stream;
+      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
       chunksRef.current = [];
-      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
-      mediaRecorder.onstop = async () => {
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = () => {
         stream.getTracks().forEach(t => t.stop());
         const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        if (blob.size < 1000) { setError("Recording too short."); setStep("idle"); return; }
-        await processRecording(blob);
+        runPipeline(blob);
       };
-      mediaRecorderRef.current = mediaRecorder;
-      mediaRecorder.start(1000);
-      setStep("recording");
-      speak("Recording started. Speak naturally.");
-    } catch { setError("Microphone access denied."); }
+
+      recorderRef.current = recorder;
+      recorder.start(500);
+      setPhase("recording");
+      speak("Recording. Speak naturally.");
+    } catch {
+      setError("Allow microphone access in your browser to record.");
+    }
   }, [speak]);
 
-  const stopRecording = useCallback(() => { mediaRecorderRef.current?.stop(); }, []);
+  // ── STOP: one tap ──
+  const stop = useCallback(() => {
+    recorderRef.current?.stop();
+    if (timerRef.current) clearInterval(timerRef.current);
+  }, []);
 
-  // ── Pipeline: transcribe → analyze → review ──
-  const processRecording = async (blob: Blob) => {
-    setStep("transcribing");
+  // ── PIPELINE: transcribe → SOAP → auto-show review ──
+  const runPipeline = async (blob: Blob) => {
+    setPhase("processing");
+
+    // 1. Transcribe
+    setStatusText("Transcribing with Gemini 2.5 Flash...");
     try {
-      const formData = new FormData();
-      formData.append("audio", blob, "recording.webm");
-      const res = await fetch("/api/scribe/transcribe", { method: "POST", body: formData });
-      const data = await res.json();
-      if (!data.transcript || data.transcript === "[silence]") {
-        setError("No speech detected.");
-        setStep("idle");
+      const fd = new FormData();
+      fd.append("audio", blob, "consultation.webm");
+      const r1 = await fetch("/api/scribe/transcribe", { method: "POST", body: fd });
+      const d1 = await r1.json();
+
+      if (!d1.transcript || d1.transcript === "[silence]" || d1.error) {
+        setError(d1.error || "No speech detected. Try recording again.");
+        setPhase("ready");
         return;
       }
-      const newTranscript = transcript ? transcript + "\n" + data.transcript : data.transcript;
-      setTranscript(newTranscript);
-      speak("Transcript ready. Analyzing consultation.");
-      await analyzeSOAP(newTranscript);
-    } catch { setError("Transcription failed."); setStep("idle"); }
-  };
+      setTranscript(d1.transcript);
+    } catch {
+      setError("Transcription failed — check connection.");
+      setPhase("ready");
+      return;
+    }
 
-  const analyzeSOAP = async (text: string) => {
-    setStep("analyzing");
+    // 2. SOAP
+    setStatusText("Generating SOAP notes + ICD-10 codes...");
     try {
-      const res = await fetch("/api/scribe/analyze", {
+      const r2 = await fetch("/api/scribe/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: text }),
+        body: JSON.stringify({ transcript }),
       });
-      const data = await res.json();
-      if (data.analysis) {
-        setSoapData(data.analysis);
-        setStep("review");
+
+      // transcript state may not have updated yet — re-read from the transcribe response
+      // Actually let's use a local var
+    } catch {
+      setError("SOAP analysis failed.");
+      setPhase("ready");
+      return;
+    }
+
+    setPhase("ready"); // fallback
+  };
+
+  // Fixed pipeline that uses local variables instead of state
+  const runFullPipeline = async (blob: Blob) => {
+    setPhase("processing");
+
+    // 1. Transcribe
+    setStatusText("Transcribing with Gemini 2.5 Flash...");
+    let transcriptText = "";
+    try {
+      const fd = new FormData();
+      fd.append("audio", blob, "consultation.webm");
+      const r1 = await fetch("/api/scribe/transcribe", { method: "POST", body: fd });
+      const d1 = await r1.json();
+
+      if (!d1.transcript || d1.transcript === "[silence]" || d1.error) {
+        setError(d1.error || "No speech detected. Record again.");
+        setPhase("ready");
+        return;
+      }
+      transcriptText = d1.transcript;
+      setTranscript(transcriptText);
+      speak("Transcript ready. Analyzing.");
+    } catch {
+      setError("Transcription failed.");
+      setPhase("ready");
+      return;
+    }
+
+    // 2. SOAP
+    setStatusText("Generating SOAP notes + ICD-10 codes...");
+    try {
+      const r2 = await fetch("/api/scribe/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: transcriptText }),
+      });
+      const d2 = await r2.json();
+
+      if (d2.analysis) {
+        setSoap(d2.analysis);
+        setPhase("done");
         setShowReview(true);
-        const codes = data.analysis.icd10Codes.map((c: { code: string }) => c.code).join(", ");
-        speak(`Analysis complete. ${data.analysis.icd10Codes.length} ICD-10 codes identified: ${codes}. Review before sending.`);
-      } else { setError("Analysis failed."); setStep("idle"); }
-    } catch { setError("Analysis failed."); setStep("idle"); }
+        const codes = d2.analysis.icd10Codes.map((c: { code: string }) => c.code).join(", ");
+        speak(`Done. ${d2.analysis.icd10Codes.length} codes: ${codes}. Review the document.`);
+      } else {
+        setError("SOAP failed — " + (d2.error || "unknown error"));
+        setPhase("ready");
+      }
+    } catch {
+      setError("SOAP analysis failed.");
+      setPhase("ready");
+    }
   };
 
-  const manualAnalyze = () => {
-    if (transcript.length < 20) { setError("Need at least 20 characters."); return; }
-    analyzeSOAP(transcript);
-  };
+  // Override the recorder onstop to use the fixed pipeline
+  const startRecording = useCallback(async () => {
+    setError("");
+    setTranscript("");
+    setSoap(null);
+    setShowReview(false);
 
-  // ── Save consultation + sync ──
-  const saveConsultation = async () => {
-    if (!soapData) return;
-    setStep("saving");
     try {
-      const res = await fetch("/api/scribe/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          patientId: selectedPatient || null,
-          transcript,
-          soap: soapData.soap,
-          icd10Codes: soapData.icd10Codes,
-          redFlags: soapData.redFlags,
-          chiefComplaint: soapData.chiefComplaint,
-          medications: soapData.medications,
-        }),
-      });
-      const result = await res.json();
-      setSaveResult(result);
-      setStep("done");
-      speak("Consultation saved. Claim drafted. Ready for coding.");
-    } catch { setError("Save failed."); setStep("review"); }
-  };
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      chunksRef.current = [];
 
-  // ── Document generation ──
-  const buildCodingDocument = (data: SOAPData): string => {
-    return [
-      "CLINICAL CONSULTATION — CODING DOCUMENT",
-      "=".repeat(45),
-      `Date: ${new Date().toLocaleDateString("en-ZA")}`,
-      `Patient: ${PATIENTS.find(p => p.id === selectedPatient)?.name || "Unassigned"}`,
-      `Generated by: Doctor OS AI Scribe`,
-      "",
-      `Chief Complaint: ${data.chiefComplaint}`,
-      "",
-      "DIAGNOSIS CODES (ICD-10 WHO)",
-      "-".repeat(30),
-      ...data.icd10Codes.map(c => `  ${c.code}  ${c.description}  [${c.confidence}%]`),
-      "", "SUBJECTIVE", "-".repeat(30), data.soap.subjective || "—",
-      "", "OBJECTIVE", "-".repeat(30), data.soap.objective || "—",
-      "", "ASSESSMENT", "-".repeat(30), data.soap.assessment || "—",
-      "", "PLAN", "-".repeat(30), data.soap.plan || "—",
-      ...(data.medications.length > 0 ? ["", "MEDICATIONS", "-".repeat(30), ...data.medications.map(m => `  ${m.name} ${m.dosage} — ${m.frequency}`)] : []),
-      ...(data.redFlags.length > 0 ? ["", "RED FLAGS", "-".repeat(30), ...data.redFlags.map(f => `  ! ${f}`)] : []),
-      "", "=".repeat(45),
-    ].join("\n");
-  };
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
 
-  const downloadDocument = () => {
-    if (!soapData) return;
-    const blob = new Blob([buildCodingDocument(soapData)], { type: "text/plain" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `consultation-${new Date().toISOString().split("T")[0]}.txt`;
-    a.click();
+      recorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        runFullPipeline(blob);
+      };
+
+      recorderRef.current = recorder;
+      recorder.start(500);
+      setPhase("recording");
+      speak("Recording started.");
+    } catch {
+      setError("Microphone blocked. Allow access in browser settings.");
+    }
+  }, [speak]);
+
+  const stopRecording = useCallback(() => {
+    recorderRef.current?.stop();
+    if (timerRef.current) clearInterval(timerRef.current);
+  }, []);
+
+  // ── Documents ──
+  const buildDoc = (data: SOAPData) => [
+    "CLINICAL CONSULTATION — CODING DOCUMENT",
+    "=".repeat(45),
+    `Date: ${new Date().toLocaleDateString("en-ZA")}`,
+    "", `Chief Complaint: ${data.chiefComplaint}`,
+    "", "ICD-10 CODES", "-".repeat(30),
+    ...data.icd10Codes.map(c => `  ${c.code}  ${c.description}  [${c.confidence}%]`),
+    "", "S — Subjective", data.soap.subjective || "—",
+    "", "O — Objective", data.soap.objective || "—",
+    "", "A — Assessment", data.soap.assessment || "—",
+    "", "P — Plan", data.soap.plan || "—",
+    ...(data.medications.length ? ["", "Medications", ...data.medications.map(m => `  ${m.name} ${m.dosage} — ${m.frequency}`)] : []),
+    ...(data.redFlags.length ? ["", "RED FLAGS", ...data.redFlags.map(f => `  ! ${f}`)] : []),
+  ].join("\n");
+
+  const download = () => {
+    if (!soap) return;
+    const b = new Blob([buildDoc(soap)], { type: "text/plain" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(b);
+    a.download = `consultation-${new Date().toISOString().split("T")[0]}.txt`; a.click();
   };
 
   const sendToVisioCode = () => {
-    if (!soapData) return;
-    downloadDocument();
-    const codes = soapData.icd10Codes.map(c => c.code).join(", ");
-    const prompt = `Consultation from Doctor OS:\n\nChief Complaint: ${soapData.chiefComplaint}\nICD-10 Codes: ${codes}\n\nAssessment: ${soapData.soap.assessment}\nPlan: ${soapData.soap.plan}\n\nValidate these codes, check scheme compatibility, suggest corrections.`;
-    window.open(`https://visiocode.vercel.app/chat?prompt=${encodeURIComponent(prompt)}`, "_blank");
+    if (!soap) return;
+    download();
+    const codes = soap.icd10Codes.map(c => c.code).join(", ");
+    const p = `Doctor OS consultation:\n\nChief Complaint: ${soap.chiefComplaint}\nICD-10: ${codes}\nAssessment: ${soap.soap.assessment}\nPlan: ${soap.soap.plan}\n\nValidate codes and check scheme compatibility.`;
+    window.open(`https://visiocode.vercel.app/chat?prompt=${encodeURIComponent(p)}`, "_blank");
+    setShowReview(false);
   };
 
-  const resetScribe = () => {
-    setStep("idle"); setTranscript(""); setSoapData(null);
-    setShowReview(false); setSaveResult(null); setError("");
-  };
+  const reset = () => { setPhase("ready"); setTranscript(""); setSoap(null); setShowReview(false); setError(""); setSeconds(0); };
 
   return (
     <div className="p-4 lg:p-6 h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-lg font-semibold">AI Scribe</h1>
           <p className="text-[11px] text-muted-foreground">
-            {step === "idle" && "Select patient, then record consultation."}
-            {step === "recording" && "Recording... speak naturally. Click stop when done."}
-            {step === "transcribing" && "Gemini 2.5 Flash transcribing audio..."}
-            {step === "analyzing" && "Generating SOAP notes + ICD-10 codes..."}
-            {step === "review" && "Review complete. Save or send for coding."}
-            {step === "saving" && "Saving to database + drafting claim..."}
-            {step === "done" && "Consultation saved. Claim drafted."}
+            {phase === "ready" && "Tap the mic to start a consultation."}
+            {phase === "recording" && "Listening... tap the stop button when done."}
+            {phase === "processing" && statusText}
+            {phase === "done" && "Consultation ready. Review and send for coding."}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Voice toggle */}
-          <button
-            onClick={() => setVoiceEnabled(!voiceEnabled)}
-            className={`p-1.5 rounded-md ring-1 ring-border transition ${voiceEnabled ? "text-foreground bg-accent" : "text-muted-foreground"}`}
-            title={voiceEnabled ? "Voice feedback ON" : "Voice feedback OFF"}
-          >
-            {voiceEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-          </button>
-          {/* Steps */}
-          <div className="hidden sm:flex items-center gap-1">
-            <Dot label="Record" active={step === "recording"} done={["transcribing","analyzing","review","saving","done"].includes(step)} />
-            <div className="w-3 h-px bg-border" />
-            <Dot label="Transcribe" active={step === "transcribing"} done={["analyzing","review","saving","done"].includes(step)} />
-            <div className="w-3 h-px bg-border" />
-            <Dot label="SOAP" active={step === "analyzing"} done={["review","saving","done"].includes(step)} />
-            <div className="w-3 h-px bg-border" />
-            <Dot label="Save" active={step === "saving"} done={step === "done"} />
-            <div className="w-3 h-px bg-border" />
-            <Dot label="Code" active={step === "done"} done={false} />
-          </div>
-        </div>
-      </div>
-
-      {/* Patient selector + error */}
-      <div className="flex items-center gap-3 mb-3">
-        <UserCircle className="w-4 h-4 text-muted-foreground shrink-0" />
-        <select
-          value={selectedPatient}
-          onChange={e => setSelectedPatient(e.target.value)}
-          className="flex-1 max-w-xs bg-card ring-1 ring-border rounded-md px-3 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-ring"
-        >
-          <option value="">Select patient (optional)</option>
-          {PATIENTS.map(p => (
-            <option key={p.id} value={p.id}>{p.name} — {p.condition}</option>
-          ))}
-        </select>
-        {step === "done" && (
-          <button onClick={resetScribe} className="text-[12px] text-muted-foreground hover:text-foreground transition">
-            New consultation
-          </button>
-        )}
+        <button onClick={() => setVoiceOn(!voiceOn)} className="p-1.5 rounded-md ring-1 ring-border transition" title="Toggle voice">
+          {voiceOn ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5 text-muted-foreground" />}
+        </button>
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[var(--color-rejected)]/10 text-[var(--color-rejected)] text-[12px] mb-3">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[var(--color-rejected)]/10 text-[var(--color-rejected)] text-[12px] mb-4">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> {error}
           <button onClick={() => setError("")} className="ml-auto"><X className="w-3 h-3" /></button>
         </div>
       )}
 
-      {/* Main panels */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-0">
-        {/* LEFT: Transcript */}
-        <div className="rounded-lg ring-1 ring-border bg-card flex flex-col overflow-hidden">
-          <div className="px-4 py-2 border-b border-border flex items-center justify-between">
-            <div className="flex items-center gap-2">
+      {/* ═══ PHASE: READY — Big mic button ═══ */}
+      {phase === "ready" && !soap && (
+        <div className="flex-1 flex flex-col items-center justify-center">
+          <button
+            onClick={startRecording}
+            className="w-32 h-32 rounded-full ring-2 ring-border bg-card flex items-center justify-center hover:bg-accent hover:ring-foreground transition-all group"
+          >
+            <Mic className="w-12 h-12 text-muted-foreground group-hover:text-foreground transition" />
+          </button>
+          <p className="mt-6 text-[13px] text-muted-foreground">Tap to record consultation</p>
+          <p className="text-[11px] text-muted-foreground mt-1">Gemini transcribes &rarr; SOAP auto-generates &rarr; Review &rarr; Send to VisioCode</p>
+        </div>
+      )}
+
+      {/* ═══ PHASE: RECORDING — Pulsing stop button + live indicator ═══ */}
+      {phase === "recording" && (
+        <div className="flex-1 flex flex-col items-center justify-center">
+          <button
+            onClick={stopRecording}
+            className="w-32 h-32 rounded-full ring-2 ring-[var(--color-rejected)] bg-[var(--color-rejected)]/10 flex items-center justify-center animate-pulse"
+          >
+            <Square className="w-10 h-10 text-[var(--color-rejected)]" />
+          </button>
+          <div className="mt-6 flex items-center gap-3">
+            <div className="w-3 h-3 rounded-full bg-[var(--color-rejected)] animate-pulse" />
+            <span className="text-2xl font-mono font-semibold">{fmt(seconds)}</span>
+          </div>
+          <p className="text-[13px] text-muted-foreground mt-2">Recording... tap stop when done</p>
+        </div>
+      )}
+
+      {/* ═══ PHASE: PROCESSING — Spinner ═══ */}
+      {phase === "processing" && (
+        <div className="flex-1 flex flex-col items-center justify-center">
+          <Loader2 className="w-16 h-16 animate-spin text-muted-foreground mb-6" />
+          <p className="text-[13px] font-medium">{statusText}</p>
+          <p className="text-[11px] text-muted-foreground mt-1">This takes 5-15 seconds...</p>
+        </div>
+      )}
+
+      {/* ═══ PHASE: DONE — Split view ═══ */}
+      {(phase === "done" || (phase === "ready" && soap)) && soap && (
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-0">
+          {/* Transcript */}
+          <div className="rounded-lg ring-1 ring-border bg-card flex flex-col overflow-hidden">
+            <div className="px-4 py-2 border-b border-border flex items-center gap-2">
               <Mic className="w-3.5 h-3.5 text-muted-foreground" />
               <span className="text-[13px] font-medium">Transcript</span>
             </div>
-            {step === "recording" && (
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-[var(--color-rejected)] animate-pulse" />
-                <span className="text-[12px] font-mono text-[var(--color-rejected)]">{fmt(recordingTime)}</span>
-              </div>
-            )}
-            {(step === "transcribing" || step === "analyzing") && (
-              <div className="flex items-center gap-1.5">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-                <span className="text-[11px] text-muted-foreground">{step === "transcribing" ? "Gemini..." : "Claude..."}</span>
-              </div>
-            )}
-          </div>
-          <div className="flex-1 p-4 overflow-y-auto">
-            {transcript ? (
+            <div className="flex-1 p-4 overflow-y-auto">
               <pre className="text-[13px] whitespace-pre-wrap font-sans leading-relaxed">{transcript}</pre>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full text-center">
-                <Mic className="w-12 h-12 text-muted-foreground/15 mb-3" />
-                <p className="text-[13px] text-muted-foreground">Press record to start consultation.</p>
-                <p className="text-[11px] text-muted-foreground mt-1">Or type/paste below for demo.</p>
-              </div>
-            )}
+            </div>
           </div>
-          <div className="px-4 py-3 border-t border-border">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={step === "recording" ? stopRecording : startRecording}
-                disabled={["transcribing", "analyzing", "saving"].includes(step)}
-                className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ring-2 disabled:opacity-30 shrink-0 ${
-                  step === "recording"
-                    ? "ring-[var(--color-rejected)] bg-[var(--color-rejected)]/10 text-[var(--color-rejected)] animate-pulse"
-                    : "ring-border bg-card text-foreground hover:bg-accent"
-                }`}
-              >
-                {step === "recording" ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-              </button>
-              <input
-                type="text"
-                placeholder="Type transcript here, press Enter..."
-                className="flex-1 ring-1 ring-border rounded-md px-3 py-2 text-[13px] bg-transparent placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                disabled={["recording", "transcribing", "analyzing", "saving"].includes(step)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && e.currentTarget.value.trim()) {
-                    setTranscript(prev => prev + (prev ? "\n" : "") + e.currentTarget.value);
-                    e.currentTarget.value = "";
-                  }
-                }}
-              />
-              {transcript && !soapData && !["recording","transcribing","analyzing"].includes(step) && (
-                <button onClick={manualAnalyze} className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-foreground text-background text-[12px] font-medium hover:opacity-90 transition shrink-0">
-                  <ArrowRight className="w-3.5 h-3.5" /> Analyze
-                </button>
+
+          {/* SOAP */}
+          <div className="rounded-lg ring-1 ring-border bg-card flex flex-col overflow-hidden">
+            <div className="px-4 py-2 border-b border-border flex items-center gap-2">
+              <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-[13px] font-medium">SOAP Notes</span>
+              <CheckCircle className="w-3 h-3 text-[var(--color-valid)] ml-auto" />
+            </div>
+            <div className="flex-1 p-4 overflow-y-auto space-y-3">
+              <div className="rounded-md bg-accent px-3 py-2">
+                <span className="text-[10px] text-muted-foreground uppercase">Chief Complaint</span>
+                <p className="text-[13px] font-medium">{soap.chiefComplaint}</p>
+              </div>
+
+              {(["subjective","objective","assessment","plan"] as const).map(s => (
+                <div key={s}>
+                  <label className="text-[10px] text-muted-foreground uppercase font-medium">{s.charAt(0).toUpperCase()} — {s}</label>
+                  <div className="mt-1 rounded-md ring-1 ring-border bg-background p-2 text-[12px] leading-relaxed">{soap.soap[s] || "—"}</div>
+                </div>
+              ))}
+
+              {soap.icd10Codes.length > 0 && (
+                <div>
+                  <label className="text-[10px] text-muted-foreground uppercase font-medium">ICD-10 Codes</label>
+                  <div className="mt-1 space-y-1">
+                    {soap.icd10Codes.map((c,i) => (
+                      <div key={i} className="flex items-center gap-2 rounded-md ring-1 ring-border bg-background px-2 py-1">
+                        <span className="text-[12px] font-mono font-bold">{c.code}</span>
+                        <span className="text-[11px] text-muted-foreground flex-1">{c.description}</span>
+                        <span className="text-[10px] font-mono">{c.confidence}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
-            </div>
-          </div>
-        </div>
 
-        {/* RIGHT: SOAP + Actions */}
-        <div className="rounded-lg ring-1 ring-border bg-card flex flex-col overflow-hidden">
-          <div className="px-4 py-2 border-b border-border flex items-center gap-2">
-            <FileText className="w-3.5 h-3.5 text-muted-foreground" />
-            <span className="text-[13px] font-medium">SOAP Notes</span>
-            {soapData && <CheckCircle className="w-3 h-3 text-[var(--color-valid)] ml-auto" />}
-          </div>
-          <div className="flex-1 p-4 overflow-y-auto space-y-3">
-            {soapData ? (
-              <>
-                <div className="rounded-md bg-accent px-3 py-2">
-                  <span className="text-[10px] text-muted-foreground uppercase">Chief Complaint</span>
-                  <p className="text-[13px] font-medium">{soapData.chiefComplaint}</p>
+              {soap.redFlags.length > 0 && soap.redFlags.map((f,i) => (
+                <div key={i} className="flex items-center gap-1.5 text-[11px] text-[var(--color-rejected)]">
+                  <AlertTriangle className="w-3 h-3" /> {f}
                 </div>
-
-                {(["subjective", "objective", "assessment", "plan"] as const).map(s => (
-                  <div key={s}>
-                    <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
-                      {s.charAt(0).toUpperCase()} — {s}
-                    </label>
-                    <div className="mt-1 rounded-md ring-1 ring-border bg-background p-2.5 text-[12px] leading-relaxed min-h-[28px]">
-                      {soapData.soap[s] || "—"}
-                    </div>
-                  </div>
-                ))}
-
-                {soapData.icd10Codes.length > 0 && (
-                  <div>
-                    <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">ICD-10 Codes</label>
-                    <div className="mt-1 space-y-1">
-                      {soapData.icd10Codes.map((c, i) => (
-                        <div key={i} className="flex items-center gap-2 rounded-md ring-1 ring-border bg-background px-2.5 py-1">
-                          <span className="text-[12px] font-mono font-bold">{c.code}</span>
-                          <span className="text-[11px] text-muted-foreground flex-1">{c.description}</span>
-                          <span className="text-[10px] font-mono text-muted-foreground">{c.confidence}%</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {soapData.redFlags.length > 0 && (
-                  <div>
-                    <label className="text-[10px] text-[var(--color-rejected)] uppercase tracking-wider font-medium">Red Flags</label>
-                    {soapData.redFlags.map((f, i) => (
-                      <div key={i} className="flex items-center gap-1.5 text-[11px] text-[var(--color-rejected)] mt-1">
-                        <AlertTriangle className="w-3 h-3 shrink-0" /> {f}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {soapData.medications.length > 0 && (
-                  <div>
-                    <label className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">Medications</label>
-                    {soapData.medications.map((m, i) => (
-                      <div key={i} className="text-[11px] font-mono mt-0.5">{m.name} {m.dosage} — {m.frequency}</div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Save result / sync status */}
-                {saveResult && (
-                  <div className="rounded-md ring-1 ring-[var(--color-valid)]/30 bg-[var(--color-valid)]/5 p-3 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <CheckCircle className="w-3.5 h-3.5 text-[var(--color-valid)]" />
-                      <span className="text-[12px] font-medium text-[var(--color-valid)]">Saved successfully</span>
-                    </div>
-                    <div className="text-[11px] text-muted-foreground space-y-1">
-                      <p className="font-mono">Consultation: {saveResult.consultationId?.slice(0, 12)}...</p>
-                      {saveResult.claimId && <p className="font-mono">Claim drafted: {saveResult.claimId.slice(0, 12)}...</p>}
-                    </div>
-                    {saveResult.syncStatus && (
-                      <div className="space-y-1 pt-1 border-t border-border">
-                        <p className="text-[10px] text-muted-foreground uppercase font-medium">Integration Sync</p>
-                        {Object.entries(saveResult.syncStatus).map(([key, val]) => (
-                          <div key={key} className="flex items-center gap-2 text-[11px]">
-                            <Plug className="w-3 h-3 text-muted-foreground" />
-                            <span className="font-medium capitalize">{key}</span>
-                            <span className={`text-[10px] font-mono ${val.ready ? "text-[var(--color-warning)]" : "text-muted-foreground"}`}>
-                              {val.ready ? "ready" : "offline"}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Actions */}
-                <div className="pt-3 border-t border-border space-y-2">
-                  {step !== "done" ? (
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        onClick={saveConsultation}
-                        disabled={step === "saving"}
-                        className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] font-medium hover:bg-accent transition disabled:opacity-50"
-                      >
-                        {step === "saving" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                        Save + Draft Claim
-                      </button>
-                      <button
-                        onClick={() => setShowReview(true)}
-                        className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-foreground text-background text-[12px] font-medium hover:opacity-90 transition"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" /> Review &amp; Code
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={sendToVisioCode}
-                      className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-md bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" /> Send to VisioCode for Clinical Coding
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full text-center py-8">
-                <FileText className="w-10 h-10 text-muted-foreground/15 mb-3" />
-                <p className="text-[13px] text-muted-foreground">SOAP notes auto-generate after recording.</p>
-                <p className="text-[11px] text-muted-foreground mt-1">Record → Transcribe → SOAP → Save → Code</p>
-                <div className="mt-4 flex items-center gap-4 text-[10px] text-muted-foreground">
-                  <span className="flex items-center gap-1"><Volume2 className="w-3 h-3" /> ElevenLabs voice</span>
-                  <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> Gemini 2.5 Flash</span>
-                  <span className="flex items-center gap-1"><Plug className="w-3 h-3" /> CareOn ready</span>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* ═══ REVIEW MODAL ═══ */}
-      {showReview && soapData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="w-full max-w-2xl max-h-[90vh] rounded-lg ring-1 ring-border bg-card flex flex-col overflow-hidden">
-            <div className="px-5 py-3 border-b border-border flex items-center justify-between">
-              <div>
-                <h2 className="text-[15px] font-semibold">Review Coding Document</h2>
-                <p className="text-[11px] text-muted-foreground">Verify before sending to VisioCode for clinical coding validation.</p>
-              </div>
-              <button onClick={() => setShowReview(false)} className="p-1 rounded hover:bg-accent transition"><X className="w-4 h-4 text-muted-foreground" /></button>
+              ))}
             </div>
-            <div className="flex-1 overflow-y-auto p-5">
-              <pre className="text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-muted-foreground">{buildCodingDocument(soapData)}</pre>
-            </div>
-            <div className="px-5 py-3 border-t border-border flex items-center gap-3">
-              <button onClick={downloadDocument} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] hover:bg-accent transition">
-                <Download className="w-3.5 h-3.5" /> Download
+
+            {/* Actions */}
+            <div className="px-4 py-3 border-t border-border flex items-center gap-2">
+              <button onClick={reset} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] hover:bg-accent transition">
+                <RotateCcw className="w-3.5 h-3.5" /> New
               </button>
-              <button onClick={() => setShowReview(false)} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] text-muted-foreground hover:bg-accent transition">
-                Edit SOAP
+              <button onClick={download} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] hover:bg-accent transition">
+                <Download className="w-3.5 h-3.5" /> Download
               </button>
               <div className="flex-1" />
               <button
-                onClick={() => { setShowReview(false); sendToVisioCode(); }}
+                onClick={() => setShowReview(true)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-foreground text-background text-[12px] font-medium hover:opacity-90 transition"
+              >
+                <ExternalLink className="w-3.5 h-3.5" /> Review &amp; Code <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ REVIEW MODAL ═══ */}
+      {showReview && soap && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={() => setShowReview(false)}>
+          <div className="w-full max-w-2xl max-h-[85vh] rounded-lg ring-1 ring-border bg-card flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-3 border-b border-border flex items-center justify-between">
+              <div>
+                <h2 className="text-[15px] font-semibold">Review Before Coding</h2>
+                <p className="text-[11px] text-muted-foreground">This document will be sent to VisioCode for clinical coding validation.</p>
+              </div>
+              <button onClick={() => setShowReview(false)} className="p-1 rounded hover:bg-accent"><X className="w-4 h-4 text-muted-foreground" /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <pre className="text-[12px] font-mono whitespace-pre-wrap leading-relaxed text-muted-foreground">{buildDoc(soap)}</pre>
+            </div>
+            <div className="px-5 py-3 border-t border-border flex items-center gap-3">
+              <button onClick={download} className="flex items-center gap-1.5 px-3 py-2 rounded-md ring-1 ring-border text-[12px] hover:bg-accent transition">
+                <Download className="w-3.5 h-3.5" /> Download Only
+              </button>
+              <div className="flex-1" />
+              <button
+                onClick={sendToVisioCode}
                 className="flex items-center gap-2 px-4 py-2 rounded-md bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition"
               >
                 <ExternalLink className="w-3.5 h-3.5" /> Send to VisioCode <ArrowRight className="w-3.5 h-3.5" />
@@ -508,15 +427,6 @@ export default function ScribePage() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function Dot({ label, active, done }: { label: string; active: boolean; done: boolean }) {
-  return (
-    <div className="flex items-center gap-1">
-      <div className={`w-2 h-2 rounded-full transition-colors ${done ? "bg-[var(--color-valid)]" : active ? "bg-foreground animate-pulse" : "bg-border"}`} />
-      <span className={`text-[10px] ${active ? "text-foreground font-medium" : done ? "text-[var(--color-valid)]" : "text-muted-foreground"}`}>{label}</span>
     </div>
   );
 }
