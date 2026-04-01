@@ -43,8 +43,8 @@ export const export_to_excel = tool({
       ready: true,
       type,
       rowCount,
-      downloadUrl: `/api/export/excel?type=${type}&from=${dateFrom || ""}&to=${dateTo || ""}`,
-      message: `Excel file ready with ${rowCount} ${type} records.`,
+      downloadUrl: `/api/export/csv?type=${type}&from=${dateFrom || ""}&to=${dateTo || ""}`,
+      message: `CSV file ready with ${rowCount} ${type} records. Doctor can click the link to download.`,
     };
   },
 });
