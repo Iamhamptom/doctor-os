@@ -413,6 +413,31 @@ export default function ScribePage() {
                 </div>
               ))}
 
+              {/* KB Verification */}
+              {(result as any).kb && (
+                <div className="rounded-md ring-1 ring-[var(--color-valid)]/30 bg-[var(--color-valid)]/5 p-3 space-y-1.5">
+                  <label className="text-[10px] text-[var(--color-valid)] uppercase font-medium flex items-center gap-1">
+                    <Shield className="w-3 h-3" /> Knowledge Base Verification
+                  </label>
+                  <p className="text-[11px]">
+                    KB Score: <span className="font-mono font-bold">{(result as any).kb.score}%</span>
+                    {" · "}NAPPI: {(result as any).kb.nappiMatches}/{(result as any).kb.nappiTotal} matched
+                    {(result as any).kb.pmbCodes?.length > 0 && <> · PMB: {(result as any).kb.pmbCodes.join(", ")}</>}
+                  </p>
+                  {(result as any).kb.suggestedTariffs?.length > 0 && (
+                    <p className="text-[11px] font-mono">
+                      Tariff: {(result as any).kb.suggestedTariffs[0].code} ({(result as any).kb.suggestedTariffs[0].description})
+                    </p>
+                  )}
+                  {(result as any).kb.enrichments?.slice(0, 3).map((e: string, i: number) => (
+                    <p key={i} className="text-[10px] text-[var(--color-valid)]">+ {e}</p>
+                  ))}
+                  {(result as any).kb.issues?.length > 0 && (result as any).kb.issues.slice(0, 2).map((iss: string, i: number) => (
+                    <p key={i} className="text-[10px] text-[var(--color-warning)]">! {iss}</p>
+                  ))}
+                </div>
+              )}
+
               {/* Linked Evidence summary */}
               <div className="rounded-md bg-accent px-3 py-2">
                 <label className="text-[10px] text-muted-foreground uppercase font-medium">Linked Evidence</label>

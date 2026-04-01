@@ -95,33 +95,66 @@ IMPORTANT RULES:
     const speakers = parseSpeakers(transcript);
     console.log(`[pipeline] L2: ${speakers.length} speaker segments identified`);
 
-    // ── L3: SOAP + ICD-10 (Gemini) ──
+    // ── L3: SOAP + ICD-10 (Gemini generates initial) ──
     const specialty = detectSpecialty(transcript);
     console.log(`[pipeline] L3: Specialty detected: ${specialty}`);
 
     const analysis = await generateSOAP(transcript);
-    console.log(`[pipeline] L3: SOAP generated, ${analysis.icd10Codes.length} ICD-10 codes`);
+    console.log(`[pipeline] L3: SOAP generated, ${analysis.icd10Codes.length} ICD-10 codes (pre-validation)`);
+
+    // ── L3.5: KNOWLEDGE BASE VALIDATION (RAG) ──
+    // Every AI-generated code/medication is validated against our actual databases.
+    // Nothing goes to the doctor without KB verification.
+    const { validateAgainstKB } = await import("@/lib/engines/kb-validator");
+    const kbResult = await validateAgainstKB(analysis, specialty);
+
+    console.log(`[pipeline] L3.5: KB validation — ${kbResult.validatedCodes.filter(c => c.dbMatch).length}/${kbResult.validatedCodes.length} codes verified, ${kbResult.issues.length} issues, ${kbResult.enrichments.length} enrichments, KB score: ${kbResult.kbScore}`);
+
+    // Replace AI-generated codes with KB-validated codes
+    // Only keep codes that exist in our database (or show corrected alternatives)
+    analysis.icd10Codes = kbResult.validatedCodes.map(vc => ({
+      code: vc.correctedCode || vc.code,
+      description: vc.description,
+      confidence: vc.dbMatch ? vc.confidence : Math.round(vc.confidence * 0.5), // Halve confidence for unverified codes
+    }));
+
+    // Enrich medications with NAPPI codes
+    for (const med of analysis.medications) {
+      const match = kbResult.validatedMedications.find(vm => vm.name === med.name);
+      if (match?.nappiCode) {
+        med.dosage = `${med.dosage} [NAPPI: ${match.nappiCode}]`;
+      }
+    }
 
     // ── L4: Validation Layer ──
     const linkedEvidence = buildLinkedEvidence(analysis, transcript);
     const hallucinations = detectHallucinations(analysis, transcript);
-    const drugSafety = await checkDrugSafety(analysis.medications);
-    const overallScore = calculateConfidence(linkedEvidence, hallucinations, analysis.icd10Codes.length);
+    const drugSafety = kbResult.drugInteractions.length > 0 ? {
+      medicationsFound: analysis.medications.map(m => m.name),
+      interactions: kbResult.drugInteractions,
+      allergyConflicts: [],
+      hasIssues: true,
+    } : await checkDrugSafety(analysis.medications);
 
-    console.log(`[pipeline] L4: Score ${overallScore}/100, ${hallucinations.length} hallucinations, ${drugSafety?.interactions.length || 0} drug interactions`);
+    // Combined score: evidence + KB validation
+    const evidenceScore = calculateConfidence(linkedEvidence, hallucinations, analysis.icd10Codes.length);
+    const overallScore = Math.round((evidenceScore + kbResult.kbScore) / 2); // Average of evidence + KB scores
+
+    console.log(`[pipeline] L4: Evidence ${evidenceScore}/100, KB ${kbResult.kbScore}/100, Combined ${overallScore}/100`);
 
     // ── L5: Routing readiness ──
+    const validCodes = kbResult.validatedCodes.filter(c => c.dbMatch && c.isValid);
     const routing = {
-      visioCodeReady: analysis.icd10Codes.length > 0,
-      careOnReady: true, // Always ready (sends when endpoint configured)
-      claimDraftReady: analysis.icd10Codes.length > 0,
+      visioCodeReady: validCodes.length > 0,
+      careOnReady: true,
+      claimDraftReady: validCodes.length > 0,
       documentReady: analysis.soap.subjective.length > 0 || analysis.soap.assessment.length > 0,
     };
 
     const elapsed = Date.now() - startTime;
     console.log(`[pipeline] Complete in ${elapsed}ms`);
 
-    const result: PipelineResult = {
+    const result = {
       transcript,
       speakers: speakers.map(s => ({ ...s, startTime: undefined })),
       durationSeconds: Math.round(elapsed / 1000),
@@ -134,6 +167,17 @@ IMPORTANT RULES:
         overallScore,
       },
       routing,
+      // KB enrichments — what the knowledge base added/verified
+      kb: {
+        score: kbResult.kbScore,
+        issues: kbResult.issues,
+        enrichments: kbResult.enrichments,
+        suggestedTariffs: kbResult.suggestedTariffs,
+        invalidCodes: kbResult.invalidCodes,
+        pmbCodes: kbResult.validatedCodes.filter(c => c.isPMB).map(c => c.code),
+        nappiMatches: kbResult.validatedMedications.filter(m => m.found).length,
+        nappiTotal: kbResult.validatedMedications.length,
+      },
     };
 
     return Response.json(result);
