@@ -156,14 +156,16 @@ export default function LandingPage() {
               { value: "R40B", label: "Denied to Patients / Year", icon: TrendingDown },
               { value: "15-20%", label: "First-Submission Rejection Rate", icon: AlertTriangle },
               { value: "74%", label: "Industry ICD-10 Accuracy", icon: Brain },
-            ].map((stat, i) => (
+            ].map((stat, i) => {
+              const StatIcon = stat.icon;
+              return (
               <motion.div
                 key={stat.label}
                 variants={fadeUp}
                 custom={i}
                 className="rounded-xl ring-1 ring-border bg-card p-5 text-center"
               >
-                <stat.icon className="w-5 h-5 text-muted-foreground mx-auto mb-3" />
+                <StatIcon className="w-5 h-5 text-muted-foreground mx-auto mb-3" />
                 <p className="text-2xl sm:text-3xl font-bold tracking-tight">{stat.value}</p>
                 <p className="text-[10px] font-mono text-muted-foreground mt-1 uppercase tracking-wider">{stat.label}</p>
               </motion.div>
@@ -268,12 +270,14 @@ export default function LandingPage() {
               { step: "07", title: "Claims Validation", desc: "ICD-10 + tariff + scheme rules validated. Pre-submission rejection prediction. PMB auto-identification.", icon: Receipt },
               { step: "08", title: "Export + Submit", desc: "Excel, CSV, email via Resend. Claims ready for switching house submission.", icon: Download },
               { step: "09", title: "Next Patient", desc: "Mark consultation complete. Full audit trail saved. Next patient called from queue.", icon: ArrowRight },
-            ].map((s, i) => (
+            ].map((s, i) => {
+              const SIcon = s.icon;
+              return (
               <FadeIn key={s.step} delay={i * 0.05}>
                 <div className="rounded-xl ring-1 ring-border bg-card p-5 h-full hover:ring-cyan-500/20 transition">
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-[10px] font-mono text-cyan-400">{s.step}</span>
-                    <s.icon className="w-3.5 h-3.5 text-muted-foreground" />
+                    <SIcon className="w-3.5 h-3.5 text-muted-foreground" />
                   </div>
                   <p className="text-[13px] font-semibold mb-1">{s.title}</p>
                   <p className="text-[11px] text-muted-foreground leading-relaxed">{s.desc}</p>
@@ -309,7 +313,7 @@ export default function LandingPage() {
               <FadeIn key={f.title} delay={i * 0.04}>
                 <div className="rounded-xl ring-1 ring-border bg-card px-5 py-4 hover:ring-cyan-500/20 transition group">
                   <div className="flex items-center gap-2 mb-2">
-                    <f.icon className="w-4 h-4 text-muted-foreground group-hover:text-cyan-400 transition" />
+                    <FIcon className="w-4 h-4 text-muted-foreground group-hover:text-cyan-400 transition" />
                     <span className="text-[13px] font-semibold">{f.title}</span>
                   </div>
                   <p className="text-[11px] text-muted-foreground leading-relaxed">{f.desc}</p>
@@ -424,10 +428,12 @@ export default function LandingPage() {
                 stat: "3 hospital groups in pipeline",
                 icon: Heart,
               },
-            ].map((segment, i) => (
+            ].map((segment, i) => {
+              const SegIcon = segment.icon;
+              return (
               <FadeIn key={segment.title} delay={i * 0.1}>
                 <div className="rounded-xl ring-1 ring-border bg-card p-6 h-full">
-                  <segment.icon className="w-6 h-6 text-cyan-400 mb-4" />
+                  <SegIcon className="w-6 h-6 text-cyan-400 mb-4" />
                   <h3 className="text-[15px] font-semibold mb-2">{segment.title}</h3>
                   <p className="text-[12px] text-muted-foreground leading-relaxed mb-4">{segment.desc}</p>
                   <p className="text-[10px] font-mono text-cyan-400 uppercase tracking-wider">{segment.stat}</p>
@@ -468,7 +474,7 @@ export default function LandingPage() {
             ].map((b, i) => (
               <FadeIn key={b.badge} delay={i * 0.05}>
                 <div className="rounded-xl ring-1 ring-emerald-500/20 bg-emerald-500/5 p-4 text-center hover:ring-emerald-500/40 transition">
-                  <b.icon className="w-5 h-5 text-emerald-400 mx-auto mb-2" />
+                  <BIcon className="w-5 h-5 text-emerald-400 mx-auto mb-2" />
                   <p className="text-[13px] font-bold text-emerald-400">{b.badge}</p>
                   <p className="text-[10px] text-muted-foreground mt-1 leading-relaxed">{b.desc}</p>
                 </div>
