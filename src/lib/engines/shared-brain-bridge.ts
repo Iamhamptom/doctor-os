@@ -79,9 +79,9 @@ export async function brainLookupICD10(
       description: entry.description,
       chapter: entry.chapter || 0,
       pmb: entry.isPMB || false,
-      cdl: entry.isCDL || false,
+      cdl: false,
       gender: (entry.genderRestriction as "M" | "F" | null) || null,
-      valid_primary: entry.validAsPrimary !== false,
+      valid_primary: entry.isValid !== false,
     }));
 
   setCache(cacheKey, results);
