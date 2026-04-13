@@ -1,7 +1,6 @@
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
-import { google } from "@ai-sdk/google";
-import { anthropic } from "@ai-sdk/anthropic";
 import { createTools, DOCTOR_OS_SYSTEM_PROMPT } from "@/lib/agent";
+import { inferTask, getModelWithFallback } from "@/lib/ai/model-router";
 
 export const maxDuration = 120;
 
@@ -12,13 +11,16 @@ export async function POST(request: Request) {
     const practiceId = "demo-practice";
     const tools = createTools(practiceId);
 
-    // Model chain: Gemini 2.5 Flash (primary, cheapest) → Claude Sonnet (fallback)
-    let model;
-    try {
-      model = google("gemini-2.5-flash");
-    } catch {
-      model = anthropic("claude-sonnet-4-20250514");
-    }
+    // Extract last user message for task inference
+    const lastUserMsg = [...messages].reverse().find((m: { role: string }) => m.role === "user");
+    const msgText = typeof lastUserMsg?.content === "string"
+      ? lastUserMsg.content
+      : lastUserMsg?.content?.[0]?.text || "";
+
+    // Model router: picks model by clinical task, walks fallback chain
+    const task = inferTask(msgText);
+    const { model, key } = getModelWithFallback(task);
+    console.log(`[chat] task=${task} model=${key}`);
 
     const result = streamText({
       model,

@@ -5,11 +5,11 @@
  */
 
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
-import { google } from "@ai-sdk/google";
 import { DOCTOR_OS_SYSTEM_PROMPT } from "@/lib/agent/system-prompt";
 import { createTools } from "@/lib/agent";
 import { buildCorrectionContext, recordFeedback } from "./feedback-loop";
 import { supabase } from "@/lib/db";
+import { inferTask, getModelWithFallback } from "./model-router";
 
 export interface RunOptions {
   message: string;
@@ -51,8 +51,12 @@ export async function runIntelligence(options: RunOptions): Promise<Intelligence
     { role: "user" as const, parts: [{ type: "text" as const, text: options.message }] },
   ];
 
+  // Route model by inferred clinical task
+  const task = inferTask(options.message);
+  const { model, key } = getModelWithFallback(task);
+
   const result = await streamText({
-    model: google("gemini-2.5-flash"),
+    model,
     system: systemPrompt,
     messages: await convertToModelMessages(messages),
     tools,
@@ -69,7 +73,7 @@ export async function runIntelligence(options: RunOptions): Promise<Intelligence
   return {
     response,
     toolsUsed,
-    provider: "gemini",
+    provider: key,
     stepsUsed: 0,
     threadId: options.threadId,
   };

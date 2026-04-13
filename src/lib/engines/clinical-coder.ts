@@ -10,6 +10,7 @@ import { lookupTariff } from "./tariff-database";
 import { lookupNAPPI } from "./nappi-database";
 import { validateClaims } from "./validation-engine";
 import type { ClaimLineItem, ValidationResult } from "./types";
+import { rawModelId } from "@/lib/ai/model-router";
 
 export interface ClinicalNote {
   text: string;                    // Free-text consultation notes (SOAP, plain, or structured)
@@ -121,7 +122,7 @@ export async function codeFromNotes(note: ClinicalNote): Promise<CodingResult> {
   // Call AI
   const ai = new GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: rawModelId("coding"),
     contents: userPrompt,
     config: {
       systemInstruction: SYSTEM_PROMPT,

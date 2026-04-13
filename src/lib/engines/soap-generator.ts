@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import type { ScribeAnalysis } from "./scribe-types";
+import { rawModelId } from "@/lib/ai/model-router";
 
 const SYSTEM_PROMPT = `You are a clinical documentation AI specialist trained on South African healthcare standards.
 You generate structured SOAP notes from medical consultation transcripts.
@@ -45,7 +46,7 @@ export async function generateSOAP(
   }
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: rawModelId("scribe"),
     contents: [{ role: "user", parts: [{ text: userMessage }] }],
     config: {
       systemInstruction: SYSTEM_PROMPT,

@@ -8,6 +8,7 @@
  */
 
 import { GoogleGenAI } from "@google/genai";
+import { rawModelId } from "@/lib/ai/model-router";
 import { generateSOAP } from "@/lib/engines/soap-generator";
 import {
   detectSpecialty, parseSpeakers, buildLinkedEvidence,
@@ -48,7 +49,7 @@ export async function POST(request: Request) {
 
       const ai = new GoogleGenAI({ apiKey: geminiKey });
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: rawModelId("scribe"),
         contents: [{
           role: "user",
           parts: [

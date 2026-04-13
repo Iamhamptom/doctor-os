@@ -11,7 +11,8 @@ import {
 } from "lucide-react";
 
 /* ─── animation helpers ─── */
-const fadeUp = {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fadeUp: any = {
   hidden: { opacity: 0, y: 30 },
   visible: (i: number) => ({
     opacity: 1, y: 0,
@@ -19,7 +20,8 @@ const fadeUp = {
   }),
 };
 
-const stagger = { visible: { transition: { staggerChildren: 0.06 } } };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const stagger: any = { visible: { transition: { staggerChildren: 0.06 } } };
 
 function FadeIn({ children, className = "", delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
   return (

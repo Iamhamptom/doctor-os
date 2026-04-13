@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { rawModelId } from "@/lib/ai/model-router";
 
 export const maxDuration = 60;
 
@@ -29,7 +30,7 @@ export async function POST(request: Request) {
 
     const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: rawModelId("scribe"),
       contents: [{
         role: "user",
         parts: [
