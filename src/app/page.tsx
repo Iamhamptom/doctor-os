@@ -311,7 +311,9 @@ export default function LandingPage() {
               { icon: Users, title: "Patient Records", desc: "Full records: demographics, allergies, medications, vitals, consultations, history." },
               { icon: Download, title: "Smart Exports", desc: "Excel spreadsheets, CSV files, email via Resend, patient folder storage." },
               { icon: Zap, title: "Integrations", desc: "HEAL (Medicross), CareOn (Netcare), SwitchOn, MediKredit — switching house ready." },
-            ].map((f, i) => (
+            ].map((f, i) => {
+              const FIcon = f.icon;
+              return (
               <FadeIn key={f.title} delay={i * 0.04}>
                 <div className="rounded-xl ring-1 ring-border bg-card px-5 py-4 hover:ring-cyan-500/20 transition group">
                   <div className="flex items-center gap-2 mb-2">
@@ -321,7 +323,8 @@ export default function LandingPage() {
                   <p className="text-[11px] text-muted-foreground leading-relaxed">{f.desc}</p>
                 </div>
               </FadeIn>
-            ))}
+              );
+            })}
           </div>
         </div>
       </section>
@@ -473,7 +476,9 @@ export default function LandingPage() {
               { badge: "HL7 FHIR R4", desc: "Health Level 7 Fast Healthcare Interoperability Resources", icon: Plug },
               { badge: "AES-256", desc: "Military-grade encryption for all patient data at rest and in transit", icon: Lock },
               { badge: "NHI Ready", desc: "Architecture prepared for National Health Insurance integration", icon: Globe },
-            ].map((b, i) => (
+            ].map((b, i) => {
+              const BIcon = b.icon;
+              return (
               <FadeIn key={b.badge} delay={i * 0.05}>
                 <div className="rounded-xl ring-1 ring-emerald-500/20 bg-emerald-500/5 p-4 text-center hover:ring-emerald-500/40 transition">
                   <BIcon className="w-5 h-5 text-emerald-400 mx-auto mb-2" />
@@ -481,7 +486,8 @@ export default function LandingPage() {
                   <p className="text-[10px] text-muted-foreground mt-1 leading-relaxed">{b.desc}</p>
                 </div>
               </FadeIn>
-            ))}
+              );
+            })}
           </div>
         </div>
       </section>
