@@ -169,7 +169,7 @@ export default function LandingPage() {
                 <p className="text-2xl sm:text-3xl font-bold tracking-tight">{stat.value}</p>
                 <p className="text-[10px] font-mono text-muted-foreground mt-1 uppercase tracking-wider">{stat.label}</p>
               </motion.div>
-            ))}
+            ); })}
           </motion.div>
 
           <FadeIn delay={0.3}>
@@ -283,7 +283,7 @@ export default function LandingPage() {
                   <p className="text-[11px] text-muted-foreground leading-relaxed">{s.desc}</p>
                 </div>
               </FadeIn>
-            ))}
+            ); })}
           </div>
         </div>
       </section>
@@ -439,7 +439,7 @@ export default function LandingPage() {
                   <p className="text-[10px] font-mono text-cyan-400 uppercase tracking-wider">{segment.stat}</p>
                 </div>
               </FadeIn>
-            ))}
+            ); })}
           </div>
         </div>
       </section>
